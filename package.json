@@ -62,7 +62,7 @@
     "bootstrap": "5.3.3",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
-    "happy-dom": "^20.10.6",
+    "happy-dom": "^20.11.1",
     "htmx-ext-sse": "2.2.4",
     "htmx.org": "2.0.10",
     "postcss": "^8.5.16",
