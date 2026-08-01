@@ -86,7 +86,7 @@ jobs:
       # Secondary to the dashboard and the run summary; kept for offline digging.
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-report
           path: reports/mutation/
