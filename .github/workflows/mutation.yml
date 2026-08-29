@@ -30,6 +30,13 @@ jobs:
         with:
           # The ratchet diffs against the base branch, so it needs the history to diff against.
           fetch-depth: 0
+          # The PR branch itself rather than the merge ref, because this job pushes the recorded
+          # baseline back to it and a detached merge commit has nowhere to push.
+          ref: ${{ github.head_ref }}
+          # RATCHET_TOKEN is a PAT. A push authenticated with GITHUB_TOKEN does not trigger
+          # workflows, so the commit this job makes would carry none of the required checks and
+          # leave the PR unmergeable with nothing to re-run.
+          token: ${{ secrets.RATCHET_TOKEN || github.token }}
 
       - uses: actions/setup-node@v7
         with:
@@ -42,19 +49,30 @@ jobs:
       - name: Ratchet
         run: node scripts/mutation-ratchet.mjs check --base origin/${{ github.base_ref }}
 
-      # The ratchet records a bar for any file that had none, so new code is never exempt. That
-      # recording has to be committed, and this job cannot commit it: a push authenticated with
-      # GITHUB_TOKEN does not trigger workflows, so the new head commit would carry none of the
-      # required checks and the PR would be unmergeable with nothing to re-run.
-      - name: The recorded baseline must be committed
+      # The ratchet gives any file that had no bar its first one, so new code is never exempt from
+      # the gate. Committing that back is what makes the bar outlive the run.
+      #
+      # This does not loop: the push starts one more round of checks, which finds every file already
+      # has a bar, writes nothing, and pushes nothing.
+      - name: Commit a bar for any file that had none
+        env:
+          HAS_TOKEN: ${{ secrets.RATCHET_TOKEN != '' }}
         run: |
-          if ! git diff --quiet mutation-baseline.json; then
-            echo "::error::mutation-baseline.json gained an entry for a file that had no bar."
-            git --no-pager diff mutation-baseline.json
+          if git diff --quiet mutation-baseline.json; then
+            echo "Baseline is complete: every mutated file has a bar."
+            exit 0
+          fi
+          git --no-pager diff mutation-baseline.json
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::A file has no bar, and there is no RATCHET_TOKEN to commit one with."
             echo "Run 'npm run test:mutation:check' locally - it records new files - and commit the result."
             exit 1
           fi
-          echo "Baseline is complete: every mutated file has a bar."
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mutation-baseline.json
+          git commit -m 'chore: record a mutation bar for files that had none'
+          git push origin HEAD:${{ github.head_ref }}
 
   full-sweep:
     name: Full sweep
@@ -66,6 +84,10 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Recording a missing bar means pushing a branch and opening a PR, which GITHUB_TOKEN
+          # could do without triggering that PR's required checks.
+          token: ${{ secrets.RATCHET_TOKEN || github.token }}
 
       - uses: actions/setup-node@v7
         with:
@@ -81,10 +103,7 @@ jobs:
       #
       # Concurrency is left to stryker, which reads the machine: n-1 workers, or n when n <= 4.
       # A runner has 4 cores and a dev machine has more, so a number pinned in the config is wrong
-      # on both - it was 6, which oversubscribed this runner by half and left a 10-core machine a
-      # third idle. Oversubscribing does not only cost time: a mutant is scored killed when it
-      # times out, the timeout is 5000ms + 1.5x the measured test time, and workers fighting for a
-      # core push slow-but-surviving mutants over that line. It buys a score with contention.
+      # on both - it oversubscribes one and leaves the other idle.
       - name: Run every mutant
         run: npm run test:mutation -- --reporters dashboard,html,json,clear-text,progress
         env:
@@ -97,17 +116,35 @@ jobs:
       - name: Every file must still hold its score
         run: node scripts/mutation-ratchet.mjs check-all
 
-      # Same constraint as the per-change job, and reaching here means a file got to main without
-      # the per-change path recording it - the sweep is the backstop that says so.
-      - name: The recorded baseline must be complete
+      # The backstop, for a file that reached main without the per-change path recording it. This
+      # job runs ON main, which has enforce_admins set, so nothing can push to it - the recording
+      # has to arrive as a PR like any other change.
+      - name: Open a PR for any file that reached main with no bar
+        env:
+          GH_TOKEN: ${{ secrets.RATCHET_TOKEN }}
         run: |
-          if ! git diff --quiet mutation-baseline.json; then
-            echo "::error::mutation-baseline.json gained an entry for a file that reached main with no bar."
-            git --no-pager diff mutation-baseline.json
+          if git diff --quiet mutation-baseline.json; then
+            echo "Baseline is complete: every mutated file has a bar."
+            exit 0
+          fi
+          git --no-pager diff mutation-baseline.json
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::A file reached main with no bar, and there is no RATCHET_TOKEN to record one."
             echo "Download this run's report into reports/mutation/ and commit 'npm run test:mutation:record'."
             exit 1
           fi
-          echo "Baseline is complete: every mutated file has a bar."
+          branch="chore/mutation-baseline-${GITHUB_RUN_ID}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+          git add mutation-baseline.json
+          git commit -m 'chore: record a mutation bar for files that had none'
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title 'chore: record a mutation bar for files that had none' \
+            --body 'Opened by the weekly sweep: these files were measured with no baseline to compare against, so they were exempt from the ratchet. Recorded at what the sweep measured.' \
+            --label 'release:patch'
+          gh pr merge "$branch" --rebase --auto
 
       # Secondary to the dashboard and the run summary; kept for offline digging.
       - name: Upload the report
