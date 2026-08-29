@@ -122,6 +122,23 @@ export const regressionsIn = (verdicts) =>
   verdicts.filter((v) => v.status === 'worse' || v.status === 'unmeasured');
 
 /**
+ * Scores for files that have no bar yet, ready to be recorded.
+ *
+ * A file with no baseline cannot regress, so it would otherwise sit at whatever it scores for as
+ * long as nobody re-records - unratcheted, and indistinguishable from a file that is doing fine.
+ * Its first measurement becomes its bar instead, so it is covered from the change that adds it.
+ *
+ * @param {{ file: string, now?: number, status: string }[]} verdicts
+ * @returns {Record<string, number>}
+ */
+export const newBaselines = (verdicts) =>
+  Object.fromEntries(
+    verdicts
+      .filter((v) => v.status === 'new' && v.now !== undefined)
+      .map(({ file, now }) => [file, now]),
+  );
+
+/**
  * Merge scores into the baseline, keeping entries the run did not measure.
  *
  * A scoped run reports only the files it mutated, so replacing wholesale would drop every other
@@ -211,7 +228,7 @@ function compare(files, { verbose = false } = {}) {
     writeFileSync(process.env.GITHUB_STEP_SUMMARY, summaryTable(verdicts), { flag: 'a' });
   }
 
-  return regressionsIn(verdicts);
+  return verdicts;
 }
 
 function reportRegressions(regressions) {
@@ -269,11 +286,31 @@ function main(argv) {
     console.log(`Mutating ${files.length} changed file(s):\n  ${files.join('\n  ')}\n`);
     runStryker(['--mutate', files.join(',')]);
 
-    if (reportRegressions(compare(files, { verbose: true }))) return 1;
+    const verdicts = compare(files, { verbose: true });
+    if (reportRegressions(regressionsIn(verdicts))) return 1;
+
+    const fresh = newBaselines(verdicts);
+    if (Object.keys(fresh).length > 0) {
+      writeBaseline(fresh);
+      for (const [file, score] of Object.entries(fresh)) {
+        console.log(`  RECORDED ${file}: ${score}% - it had no bar until now`);
+      }
+    }
     console.log('\nNo file scored below its baseline.');
   } else if (command === 'check-all') {
     const files = Object.keys(readReport().scores);
-    if (reportRegressions(compare(files))) return 1;
+    const verdicts = compare(files);
+    if (reportRegressions(regressionsIn(verdicts))) return 1;
+
+    // The sweep records anything the per-change path did not - a file that reached main without
+    // one, because its PR predated the ratchet or changed nothing the paths filter matches.
+    const fresh = newBaselines(verdicts);
+    if (Object.keys(fresh).length > 0) {
+      writeBaseline(fresh);
+      for (const [file, score] of Object.entries(fresh)) {
+        console.log(`  RECORDED ${file}: ${score}% - it had no bar until now`);
+      }
+    }
     console.log(`No file scored below its baseline (${files.length} checked).`);
   } else {
     console.error('Usage: mutation-ratchet.mjs check [--base <ref>] | check-all | update | record');
