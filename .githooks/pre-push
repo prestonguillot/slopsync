@@ -1,0 +1,19 @@
+#!/bin/sh
+# A file must arrive with its mutation bar.
+#
+# A file with no baseline cannot score worse than one, so the ratchet passes it at any score and it
+# stays unratcheted. The weekly sweep records what is missing, but that is a backstop for a mistake,
+# not the route: recorded here, the bar lands in the same commit as the code it measures.
+#
+# Costs a git diff and a JSON read when nothing new was added, which is almost every push. Only a
+# change that adds a mutated file pays for a stryker run, and only over that file.
+#
+# Installed by `npm install` via package.json's prepare script (git config core.hooksPath .githooks).
+# Skip a single push with --no-verify.
+
+if ! git rev-parse --verify --quiet origin/main >/dev/null; then
+  echo "pre-push: no origin/main to compare against, skipping the mutation-bar check."
+  exit 0
+fi
+
+exec node scripts/mutation-ratchet.mjs record-new

@@ -99,6 +99,17 @@ The single source of truth for how to work in this repo. Auto-loaded into contex
   likely culprit than the test.
 - The app logger is silenced during tests (`LOG_LEVEL=silent`); to debug a failing test
   you can temporarily set it to `error` in `vitest.config.ts`.
+- **Coverage is not the measure — mutation score is.** Coverage proves a line ran, not
+  that anything asserted it. `npm run test:mutation` scores the suite by breaking the
+  source and reporting what no test noticed.
+- **A new file must arrive with its mutation bar.** `mutation-baseline.json` records a
+  score per file and the ratchet fails anything that drops below its own entry. A file
+  with no entry cannot be "worse" than one, so it is exempt until somebody records it.
+  The `pre-push` hook (`.githooks/pre-push`, installed by `npm install`) measures any
+  changed file that has no bar and writes one — commit it alongside the code. It costs a
+  git diff unless you actually added a file.
+- The weekly sweep records anything that reached `main` without a bar and opens a PR for
+  it. That is a backstop for a skipped hook, not the intended route.
 
 ### Logging
 

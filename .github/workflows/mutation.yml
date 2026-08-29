@@ -30,13 +30,6 @@ jobs:
         with:
           # The ratchet diffs against the base branch, so it needs the history to diff against.
           fetch-depth: 0
-          # The PR branch itself rather than the merge ref, because this job pushes the recorded
-          # baseline back to it and a detached merge commit has nowhere to push.
-          ref: ${{ github.head_ref }}
-          # RATCHET_TOKEN is a PAT. A push authenticated with GITHUB_TOKEN does not trigger
-          # workflows, so the commit this job makes would carry none of the required checks and
-          # leave the PR unmergeable with nothing to re-run.
-          token: ${{ secrets.RATCHET_TOKEN || github.token }}
 
       - uses: actions/setup-node@v7
         with:
@@ -46,33 +39,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Judges only; it does not write the baseline back. mutation-baseline.json is one sorted file
+      # that every branch would otherwise edit, and two PRs recording files that sort near each
+      # other conflict on the update that `strict` requires before either can merge. Writing it from
+      # one place - the sweep - makes that impossible rather than rare. A push here would also cost
+      # a second full round of checks on every PR that adds a file, Argos's 64 captures included.
+      #
+      # The bar itself is established before the push, by .githooks/pre-push. Reaching main without
+      # one means that gate was skipped, and the sweep records it within the week.
       - name: Ratchet
         run: node scripts/mutation-ratchet.mjs check --base origin/${{ github.base_ref }}
-
-      # The ratchet gives any file that had no bar its first one, so new code is never exempt from
-      # the gate. Committing that back is what makes the bar outlive the run.
-      #
-      # This does not loop: the push starts one more round of checks, which finds every file already
-      # has a bar, writes nothing, and pushes nothing.
-      - name: Commit a bar for any file that had none
-        env:
-          HAS_TOKEN: ${{ secrets.RATCHET_TOKEN != '' }}
-        run: |
-          if git diff --quiet mutation-baseline.json; then
-            echo "Baseline is complete: every mutated file has a bar."
-            exit 0
-          fi
-          git --no-pager diff mutation-baseline.json
-          if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::error::A file has no bar, and there is no RATCHET_TOKEN to commit one with."
-            echo "Run 'npm run test:mutation:check' locally - it records new files - and commit the result."
-            exit 1
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add mutation-baseline.json
-          git commit -m 'chore: record a mutation bar for files that had none'
-          git push origin HEAD:${{ github.head_ref }}
 
   full-sweep:
     name: Full sweep
