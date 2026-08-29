@@ -120,8 +120,8 @@ export function createApp() {
   app.set('view engine', 'ejs');
 
   // Available to every template, so a ransom heading can be included anywhere without each route
-  // remembering to pass the helper down. Shared with the visual specs, which render views outside
-  // Express and would otherwise have to keep their own copy of this list in step by hand.
+  // remembering to pass the helper down. The visual specs render views outside Express and install
+  // the same object, rather than keeping a second copy of this list in step by hand.
   Object.assign(app.locals, viewLocals);
 
   // Routes

@@ -10,13 +10,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 
+import strykerConfig from '../../stryker.config.mjs';
 import {
   makeMutatedMatcher,
   parseReport,
   judge,
   regressionsIn,
+  newBaselines,
   mergeBaseline,
   summaryTable,
   type Verdict,
@@ -36,7 +37,7 @@ const measured = (files: Record<string, string[]>) => parseReport(reportOf(files
 
 describe('which files stryker mutates', () => {
   // The real globs: a copy would let this agree with itself while disagreeing with stryker.
-  const globs = JSON.parse(readFileSync('stryker.config.json', 'utf8')).mutate as string[];
+  const globs = strykerConfig.mutate as string[];
   const isMutated = makeMutatedMatcher(globs);
 
   it.each([['src/routes/sync.ts'], ['src/lib/logger.ts'], ['public/js/videoModal.js']])(
@@ -182,11 +183,39 @@ describe('judging a file against its baseline', () => {
     expect(regressionsIn(verdicts)).toHaveLength(1);
   });
 
-  it('records a new file without failing it', () => {
+  it('does not fail a new file, because it has nothing to be worse than', () => {
     const verdicts = judge(['src/new.ts'], baseline, measured({ 'src/new.ts': ['Survived'] }));
 
     expect(verdicts[0]).toMatchObject({ status: 'new', before: undefined, now: 0 });
     expect(regressionsIn(verdicts)).toEqual([]);
+  });
+
+  it('hands a new file its first bar, so it does not stay exempt', () => {
+    // Passing is only half of it. A file with no baseline can never be 'worse', so without this it
+    // sits unratcheted for as long as nobody re-records by hand - which is how src/lib/ransom.ts
+    // spent six weeks at 67% while the gate reported success.
+    const verdicts = judge(
+      ['src/new.ts', 'src/a.ts'],
+      baseline,
+      measured({ 'src/new.ts': ['Killed', 'Survived'], 'src/a.ts': ['Killed'] }),
+    );
+
+    // Only the one without a bar; the file that already has one keeps the bar it has.
+    expect(newBaselines(verdicts)).toEqual({ 'src/new.ts': 50 });
+  });
+
+  it('records nothing for a file that was never measured', () => {
+    // 'unmeasured' already fails the run. Recording a bar from a file the run never reached would
+    // write a number nothing earned, on top of a failure.
+    const verdicts = judge(['src/new.ts'], {}, { scores: {}, reported: new Set() });
+
+    expect(newBaselines(verdicts)).toEqual({});
+  });
+
+  it('records nothing when every file already has a bar', () => {
+    const verdicts = judge(['src/a.ts'], baseline, measured({ 'src/a.ts': ['Killed'] }));
+
+    expect(newBaselines(verdicts)).toEqual({});
   });
 
   it('passes a file with nothing in it to mutate', () => {
