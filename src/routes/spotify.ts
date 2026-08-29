@@ -13,7 +13,7 @@ import {
   parseYouTubeTokenCookie,
   validateAndSerializeSpotifyTokens,
 } from '../auth/cookieParser';
-import { issueOAuthState, verifyOAuthState } from '../auth/oauthState';
+import { issueOAuthState, verifyOAuthState, canonicalLoginUrl } from '../auth/oauthState';
 import {
   getAuthorizeUrl,
   exchangeCodeForTokens,
@@ -42,6 +42,14 @@ router.get('/login', (req, res) => {
   Logger.requestStart('Spotify Login Request', {
     requestUrl: req.originalUrl,
   });
+
+  // Before the cookie exists, not after: minting it on a host the callback will not be sent to
+  // guarantees a state mismatch.
+  const canonical = canonicalLoginUrl(req, process.env.SPOTIFY_REDIRECT_URI);
+  if (canonical) {
+    Logger.auth('Spotify', 'moving the login to the callback host', { canonical });
+    return res.redirect(canonical);
+  }
 
   const scopes = ['playlist-read-private', 'playlist-read-collaborative'];
 

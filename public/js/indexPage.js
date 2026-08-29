@@ -21,6 +21,10 @@ document.addEventListener('DOMContentLoaded', function () {
       errorMessage = `${serviceDisplay} authentication failed. Please try reconnecting.`;
     } else if (errorReason === 'service_unavailable') {
       errorMessage = `${serviceDisplay} service is temporarily unavailable. Please try again soon.`;
+    } else if (errorReason === 'state_mismatch') {
+      // Names an attack, but is almost always a connect that took over ten minutes or a stale tab
+      // reusing a one-time cookie. Say what to do, not what it could theoretically have been.
+      errorMessage = `That ${serviceDisplay} connection attempt expired. Start it again.`;
     }
 
     document.getElementById('connectionErrorLabel').textContent =

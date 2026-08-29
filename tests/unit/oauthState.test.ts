@@ -6,7 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { issueOAuthState, verifyOAuthState } from '../../src/auth/oauthState';
+import { issueOAuthState, verifyOAuthState, canonicalLoginUrl } from '../../src/auth/oauthState';
+import type { Request } from 'express';
 import { Logger } from '../../src/lib/logger';
 import { fakeRequest, fakeResponse } from '../helpers/expressStubs';
 
@@ -134,5 +135,70 @@ describe('verifyOAuthState', () => {
     verify('the-state', 'the-state');
 
     expect(Logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('canonicalLoginUrl', () => {
+  const login = (host: string) =>
+    fakeRequest({ headers: { host }, originalUrl: '/auth/youtube/login' } as Partial<Request>);
+
+  it('moves a login started on the wrong host to the callback host', () => {
+    // The whole bug: a state cookie set on localhost is never sent to 127.0.0.1, so the callback
+    // reads no cookie and the connect fails - every time, not intermittently.
+    expect(
+      canonicalLoginUrl(login('localhost:3000'), 'http://127.0.0.1:3000/auth/youtube/callback'),
+    ).toBe('http://127.0.0.1:3000/auth/youtube/login');
+  });
+
+  it('leaves a login that is already on the callback host alone', () => {
+    // Returning a URL here would bounce the browser between two spellings of the same host forever.
+    expect(
+      canonicalLoginUrl(login('127.0.0.1:3000'), 'http://127.0.0.1:3000/auth/youtube/callback'),
+    ).toBeUndefined();
+  });
+
+  it('ignores a port difference, because cookies do', () => {
+    // Cookies are scoped by hostname and pay no attention to the port, so a login on another port
+    // still hands its cookie to the callback. Redirecting here would move the browser off whatever
+    // port the app is actually reachable on, for nothing.
+    expect(
+      canonicalLoginUrl(login('127.0.0.1:4000'), 'http://127.0.0.1:3000/auth/youtube/callback'),
+    ).toBeUndefined();
+  });
+
+  it('does nothing when the request carries no Host header', () => {
+    const hostless = fakeRequest({ headers: {}, originalUrl: '/auth/youtube/login' });
+
+    expect(
+      canonicalLoginUrl(hostless, 'http://127.0.0.1:3000/auth/youtube/callback'),
+    ).toBeUndefined();
+  });
+
+  it('carries the scheme from the redirect URI, not from the request', () => {
+    expect(
+      canonicalLoginUrl(login('localhost:3000'), 'https://slopsync.example/auth/youtube/callback'),
+    ).toBe('https://slopsync.example/auth/youtube/login');
+  });
+
+  it('takes the host only from our own config, never from the request', () => {
+    // The Host header is attacker-controllable. If it could steer this, the redirect would be an
+    // open redirect that also leaks the next request's cookies.
+    const spoofed = fakeRequest({
+      headers: { host: 'evil.example' },
+      originalUrl: '/auth/youtube/login',
+    } as Partial<Request>);
+
+    expect(canonicalLoginUrl(spoofed, 'http://127.0.0.1:3000/auth/youtube/callback')).toBe(
+      'http://127.0.0.1:3000/auth/youtube/login',
+    );
+  });
+
+  it('does nothing when no redirect URI is configured', () => {
+    expect(canonicalLoginUrl(login('localhost:3000'), undefined)).toBeUndefined();
+  });
+
+  it('does nothing when the redirect URI cannot be parsed', () => {
+    // Misconfiguration should not turn the connect button into a dead end.
+    expect(canonicalLoginUrl(login('localhost:3000'), 'not a url')).toBeUndefined();
   });
 });
