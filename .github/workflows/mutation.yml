@@ -42,6 +42,20 @@ jobs:
       - name: Ratchet
         run: node scripts/mutation-ratchet.mjs check --base origin/${{ github.base_ref }}
 
+      # The ratchet records a bar for any file that had none, so new code is never exempt. That
+      # recording has to be committed, and this job cannot commit it: a push authenticated with
+      # GITHUB_TOKEN does not trigger workflows, so the new head commit would carry none of the
+      # required checks and the PR would be unmergeable with nothing to re-run.
+      - name: The recorded baseline must be committed
+        run: |
+          if ! git diff --quiet mutation-baseline.json; then
+            echo "::error::mutation-baseline.json gained an entry for a file that had no bar."
+            git --no-pager diff mutation-baseline.json
+            echo "Run 'npm run test:mutation:check' locally - it records new files - and commit the result."
+            exit 1
+          fi
+          echo "Baseline is complete: every mutated file has a bar."
+
   full-sweep:
     name: Full sweep
     if: github.event_name != 'pull_request'
@@ -82,6 +96,18 @@ jobs:
       # thing here that actually reaches a person.
       - name: Every file must still hold its score
         run: node scripts/mutation-ratchet.mjs check-all
+
+      # Same constraint as the per-change job, and reaching here means a file got to main without
+      # the per-change path recording it - the sweep is the backstop that says so.
+      - name: The recorded baseline must be complete
+        run: |
+          if ! git diff --quiet mutation-baseline.json; then
+            echo "::error::mutation-baseline.json gained an entry for a file that reached main with no bar."
+            git --no-pager diff mutation-baseline.json
+            echo "Download this run's report into reports/mutation/ and commit 'npm run test:mutation:record'."
+            exit 1
+          fi
+          echo "Baseline is complete: every mutated file has a bar."
 
       # Secondary to the dashboard and the run summary; kept for offline digging.
       - name: Upload the report
