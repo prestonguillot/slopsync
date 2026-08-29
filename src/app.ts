@@ -17,7 +17,7 @@ import { validateSpotifyConnection, validateYouTubeConnection } from './auth/aut
 import { csrfCookieMiddleware, getCsrfToken } from './auth/csrf';
 import { parseSpotifyTokenCookie, parseYouTubeTokenCookie } from './auth/cookieParser';
 import { enforceMinDisplayTime } from './lib/minDisplayTime';
-import { toRansom } from './lib/ransom';
+import { viewLocals } from './lib/viewLocals';
 import debugFixtures from './debug-fixtures.json';
 import { setCache, CacheDuration } from './lib/cache';
 
@@ -120,8 +120,9 @@ export function createApp() {
   app.set('view engine', 'ejs');
 
   // Available to every template, so a ransom heading can be included anywhere without each route
-  // remembering to pass the helper down.
-  app.locals.toRansom = toRansom;
+  // remembering to pass the helper down. Shared with the visual specs, which render views outside
+  // Express and would otherwise have to keep their own copy of this list in step by hand.
+  Object.assign(app.locals, viewLocals);
 
   // Routes
   app.use('/auth/spotify', spotifyRouter);
