@@ -7,8 +7,20 @@ import fs from 'fs';
 import path from 'path';
 import ejs from 'ejs';
 import type { Page } from '@playwright/test';
+// Relative, not the `@/` alias: vitest resolves that alias but Playwright reads the root
+// tsconfig.json, which declares no paths - so an aliased import here resolves in the unit suite
+// and fails in the Argos run, which is the one this file exists for.
+import { viewLocals } from '../../src/lib/viewLocals';
 
 export const ROOT = path.join(__dirname, '../..');
+
+/**
+ * Render a view the way the app does. Express hands every template app.locals; ejs.renderFile does
+ * not, so the helpers have to be merged in here or the template throws on one of them. Passed
+ * first, so a spec can still override a helper if it ever needs to.
+ */
+export const renderFile = (file: string, data: Record<string, unknown>) =>
+  ejs.renderFile(path.join(ROOT, file), { ...viewLocals, ...data });
 
 // Inline the self-hosted woff2 as base64 data URIs. Under setContent the page base is
 // about:blank, so @font-face url('/fonts/..') requests never resolve and text falls back to
@@ -55,7 +67,7 @@ export async function renderPartial(
   data: Record<string, unknown>,
   harnessCss?: string,
 ): Promise<void> {
-  const body = await ejs.renderFile(path.join(ROOT, 'views/partials', partial), data);
+  const body = await renderFile(path.join('views/partials', partial), data);
   await page.setContent(doc(body, harnessCss));
 }
 
@@ -65,7 +77,7 @@ export async function renderHtml(page: Page, body: string, harnessCss?: string):
 }
 
 export const renderString = (partial: string, data: Record<string, unknown>) =>
-  ejs.renderFile(path.join(ROOT, 'views/partials', partial), data);
+  renderFile(path.join('views/partials', partial), data);
 
 // --- Fixtures (mirrors the retired tests/visual/components.spec.ts) ---
 
