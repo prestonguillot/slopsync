@@ -23,7 +23,8 @@
     "type-check:tests": "tsc -p tsconfig.test.json",
     "test:mutation": "stryker run",
     "test:mutation:check": "node scripts/mutation-ratchet.mjs check",
-    "test:mutation:update": "node scripts/mutation-ratchet.mjs update"
+    "test:mutation:update": "node scripts/mutation-ratchet.mjs update",
+    "test:mutation:record": "node scripts/mutation-ratchet.mjs record"
   },
   "keywords": [
     "spotify",

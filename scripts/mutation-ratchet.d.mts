@@ -39,6 +39,8 @@ export function judge(
 
 export function regressionsIn(verdicts: Verdict[]): Verdict[];
 
+export function newBaselines(verdicts: Verdict[]): Record<string, number>;
+
 export function mergeBaseline(
   scores: Record<string, number>,
   previous: Record<string, number>,

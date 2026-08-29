@@ -31,7 +31,7 @@ jobs:
           # The ratchet diffs against the base branch, so it needs the history to diff against.
           fetch-depth: 0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -41,6 +41,20 @@ jobs:
 
       - name: Ratchet
         run: node scripts/mutation-ratchet.mjs check --base origin/${{ github.base_ref }}
+
+      # The ratchet records a bar for any file that had none, so new code is never exempt. That
+      # recording has to be committed, and this job cannot commit it: a push authenticated with
+      # GITHUB_TOKEN does not trigger workflows, so the new head commit would carry none of the
+      # required checks and the PR would be unmergeable with nothing to re-run.
+      - name: The recorded baseline must be committed
+        run: |
+          if ! git diff --quiet mutation-baseline.json; then
+            echo "::error::mutation-baseline.json gained an entry for a file that had no bar."
+            git --no-pager diff mutation-baseline.json
+            echo "Run 'npm run test:mutation:check' locally - it records new files - and commit the result."
+            exit 1
+          fi
+          echo "Baseline is complete: every mutated file has a bar."
 
   full-sweep:
     name: Full sweep
@@ -53,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -61,7 +75,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The dashboard reporter is added here rather than in stryker.config.json so that a local run
+      # The dashboard reporter is added here rather than in stryker.config.mjs so that a local run
       # does not try to publish, and so per-branch runs do not clutter the project's history. It
       # takes project + version from the Actions environment.
       #
@@ -83,10 +97,22 @@ jobs:
       - name: Every file must still hold its score
         run: node scripts/mutation-ratchet.mjs check-all
 
+      # Same constraint as the per-change job, and reaching here means a file got to main without
+      # the per-change path recording it - the sweep is the backstop that says so.
+      - name: The recorded baseline must be complete
+        run: |
+          if ! git diff --quiet mutation-baseline.json; then
+            echo "::error::mutation-baseline.json gained an entry for a file that reached main with no bar."
+            git --no-pager diff mutation-baseline.json
+            echo "Download this run's report into reports/mutation/ and commit 'npm run test:mutation:record'."
+            exit 1
+          fi
+          echo "Baseline is complete: every mutated file has a bar."
+
       # Secondary to the dashboard and the run summary; kept for offline digging.
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-report
           path: reports/mutation/
