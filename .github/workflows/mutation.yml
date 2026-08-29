@@ -61,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The dashboard reporter is added here rather than in stryker.config.json so that a local run
+      # The dashboard reporter is added here rather than in stryker.config.mjs so that a local run
       # does not try to publish, and so per-branch runs do not clutter the project's history. It
       # takes project + version from the Actions environment.
       #

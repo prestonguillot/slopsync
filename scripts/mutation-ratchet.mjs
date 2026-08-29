@@ -25,6 +25,12 @@
  *
  *   node scripts/mutation-ratchet.mjs update
  *       Sweep everything and rewrite the baseline. Run after deliberately changing what is tested.
+ *
+ *   node scripts/mutation-ratchet.mjs record
+ *       Rewrite the baseline from the report already on disk, without running stryker. The numbers
+ *       a laptop measures and the numbers the runner measures are not identical, and the runner is
+ *       what enforces them - so the recorded bar has to be one it can actually clear. Download the
+ *       sweep's report artifact into reports/mutation/ and record from that.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -35,12 +41,11 @@ import picomatch from 'picomatch';
 
 const BASELINE = 'mutation-baseline.json';
 const REPORT = 'reports/mutation/report.json';
-const CONFIG = 'stryker.config.json';
 const INCREMENTAL = 'reports/stryker-incremental.json';
 
 /**
- * Does Stryker mutate this file? Built from stryker.config.json's own globs rather than a copy of
- * them, so changing what gets mutated cannot leave this script quietly disagreeing.
+ * Does Stryker mutate this file? Built from Stryker's own globs rather than a copy of them, so
+ * changing what gets mutated cannot leave this script quietly disagreeing.
  *
  * The globs are include-minus-exclude, which is NOT what picomatch does with an array: it ORs them,
  * and reads a leading `!` as "matches anything but this" - so `!src/types/**` alone would match
@@ -136,7 +141,9 @@ export function mergeBaseline(scores, previous, stillTracked) {
   return Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-const MUTATED = makeMutatedMatcher(JSON.parse(readFileSync(CONFIG, 'utf8')).mutate);
+const MUTATED = makeMutatedMatcher(
+  (await import(pathToFileURL(path.resolve('stryker.config.mjs')).href)).default.mutate,
+);
 
 function readReport() {
   if (!existsSync(REPORT)) {
@@ -148,24 +155,13 @@ function readReport() {
 const readBaseline = () =>
   existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')).scores : {};
 
+/**
+ * Record the scores. The file holds nothing but the numbers - what they mean and how to regenerate
+ * them is documented here, in the script that reads and writes them.
+ */
 function writeBaseline(scores) {
   const sorted = mergeBaseline(scores, readBaseline(), (f) => existsSync(f) && MUTATED(f));
-  writeFileSync(
-    BASELINE,
-    JSON.stringify(
-      {
-        _comment:
-          'Per-file mutation scores. The ratchet (scripts/mutation-ratchet.mjs) fails a change ' +
-          'that drops a file below its entry here. Regenerate with: npm run test:mutation:update. ' +
-          'Scoping to the files a change touched (--mutate a,b,c) answers most questions without ' +
-          'sweeping everything. Local and CI agree on these numbers; the weekly CI sweep is what ' +
-          'checks that they still do.',
-        scores: sorted,
-      },
-      null,
-      2,
-    ) + '\n',
-  );
+  writeFileSync(BASELINE, JSON.stringify({ scores: sorted }, null, 2) + '\n');
   console.log(`Wrote ${BASELINE} (${Object.keys(sorted).length} files)`);
 }
 
@@ -258,6 +254,8 @@ function main(argv) {
   if (command === 'update') {
     runStryker([], { fresh: true });
     writeBaseline(readReport().scores);
+  } else if (command === 'record') {
+    writeBaseline(readReport().scores);
   } else if (command === 'check') {
     const baseIndex = argv.indexOf('--base');
     const base = baseIndex === -1 ? 'origin/main' : argv[baseIndex + 1];
@@ -278,7 +276,7 @@ function main(argv) {
     if (reportRegressions(compare(files))) return 1;
     console.log(`No file scored below its baseline (${files.length} checked).`);
   } else {
-    console.error('Usage: mutation-ratchet.mjs check [--base <ref>] | check-all | update');
+    console.error('Usage: mutation-ratchet.mjs check [--base <ref>] | check-all | update | record');
     return 2;
   }
   return 0;
