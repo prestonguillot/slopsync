@@ -31,6 +31,12 @@
  *       a laptop measures and the numbers the runner measures are not identical, and the runner is
  *       what enforces them - so the recorded bar has to be one it can actually clear. Download the
  *       sweep's report artifact into reports/mutation/ and record from that.
+ *
+ *   node scripts/mutation-ratchet.mjs record-new [--base origin/main]
+ *       Give a bar to any changed file that has none, and fail if it had to write one. This is the
+ *       pre-push gate (.githooks/pre-push): a file arrives with its bar rather than going unratcheted
+ *       until the weekly sweep notices. Costs a git diff and a JSON read unless a file is actually
+ *       new, so the usual answer is instant.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -273,6 +279,50 @@ function main(argv) {
     writeBaseline(readReport().scores);
   } else if (command === 'record') {
     writeBaseline(readReport().scores);
+  } else if (command === 'record-new') {
+    const baseIndex = argv.indexOf('--base');
+    const base = baseIndex === -1 ? 'origin/main' : argv[baseIndex + 1];
+    const baseline = readBaseline();
+    const files = changedFiles(base).filter((file) => baseline[file] === undefined);
+
+    // The fast path, and the usual one: a git diff and a JSON read, no stryker. Only a change that
+    // adds a mutated file pays for a measurement.
+    if (files.length === 0) {
+      console.log('Every changed file already has a bar.');
+      return 0;
+    }
+
+    console.log(`No bar yet for:\n  ${files.join('\n  ')}\n`);
+    try {
+      runStryker(['--mutate', files.join(',')]);
+    } catch (error) {
+      // Overwhelmingly this is a file with no test of its own. Stryker asks vitest which tests
+      // relate to the mutated files, vitest resolves that through imports, and a file nothing
+      // imports relates to nothing - so the run ends with "No tests were executed" rather than a
+      // score. Untested is the finding, and a stack trace buries it.
+      console.error(`\nCould not measure: ${error.message}`);
+      console.error(
+        '\nIf that says no tests were executed, nothing imports these files - they have',
+      );
+      console.error(
+        'no tests of their own. Write one, then push; a file with no test cannot have a',
+      );
+      console.error('bar, and without a bar nothing will ever notice its tests rotting.');
+      return 1;
+    }
+
+    const fresh = newBaselines(judge(files, baseline, readReport()));
+    if (Object.keys(fresh).length === 0) {
+      console.log('Nothing mutable in them, so there is no bar to record.');
+      return 0;
+    }
+
+    writeBaseline(fresh);
+    for (const [file, score] of Object.entries(fresh)) console.log(`  RECORDED ${file}: ${score}%`);
+    console.error(
+      '\nmutation-baseline.json has bars that are not committed yet. Commit it, then push.',
+    );
+    return 1;
   } else if (command === 'check') {
     const baseIndex = argv.indexOf('--base');
     const base = baseIndex === -1 ? 'origin/main' : argv[baseIndex + 1];
@@ -313,7 +363,9 @@ function main(argv) {
     }
     console.log(`No file scored below its baseline (${files.length} checked).`);
   } else {
-    console.error('Usage: mutation-ratchet.mjs check [--base <ref>] | check-all | update | record');
+    console.error(
+      'Usage: mutation-ratchet.mjs check [--base <ref>] | check-all | update | record | record-new',
+    );
     return 2;
   }
   return 0;
