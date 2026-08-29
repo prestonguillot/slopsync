@@ -7,6 +7,10 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # The merge queue tests each PR against the queue ahead of it, on a temporary
+  # gh-readonly-queue/** branch, and that fires merge_group rather than pull_request. A required
+  # check that does not run here never reports, and the queue waits on it until it times out.
+  merge_group:
   workflow_dispatch: # allow manual trigger via the Actions UI
 
 jobs:
