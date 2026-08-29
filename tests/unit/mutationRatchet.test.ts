@@ -10,8 +10,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 
+import strykerConfig from '../../stryker.config.mjs';
 import {
   makeMutatedMatcher,
   parseReport,
@@ -36,7 +36,7 @@ const measured = (files: Record<string, string[]>) => parseReport(reportOf(files
 
 describe('which files stryker mutates', () => {
   // The real globs: a copy would let this agree with itself while disagreeing with stryker.
-  const globs = JSON.parse(readFileSync('stryker.config.json', 'utf8')).mutate as string[];
+  const globs = strykerConfig.mutate as string[];
   const isMutated = makeMutatedMatcher(globs);
 
   it.each([['src/routes/sync.ts'], ['src/lib/logger.ts'], ['public/js/videoModal.js']])(
