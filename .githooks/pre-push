@@ -9,7 +9,9 @@
 # change that adds a mutated file pays for a stryker run, and only over that file.
 #
 # Installed by `npm install` via package.json's prepare script (git config core.hooksPath .githooks).
-# Skip a single push with --no-verify.
+# That script warns rather than failing: `git config` exits 128 where the checkout is owned by
+# another user, which is every containerised CI job, and a developer convenience must not be able to
+# fail an install. Skip a single push with --no-verify.
 
 if ! git rev-parse --verify --quiet origin/main >/dev/null; then
   echo "pre-push: no origin/main to compare against, skipping the mutation-bar check."
