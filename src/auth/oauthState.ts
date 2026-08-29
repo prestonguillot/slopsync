@@ -14,6 +14,54 @@ import { Request, Response } from 'express';
 import { generateCsrfToken } from './csrf';
 import { Logger } from '../lib/logger';
 
+/**
+ * Where a login has to be served from for its state cookie to survive the round trip.
+ *
+ * The provider always calls back to the registered redirect URI's hostname. Cookies are scoped per
+ * hostname, and `localhost` and `127.0.0.1` are different hostnames to a browser however identical
+ * they look - so a login started on the other one mints a cookie the callback can never read, and
+ * the connect fails every time. Sending the browser to the callback's own hostname first means the
+ * cookie is set where it will be read.
+ *
+ * Compared on hostname, not host: cookies ignore the port, so a login on a different port still
+ * hands its cookie to the callback. Redirecting for a port difference would move the browser off
+ * whatever port the app is actually reachable on for no gain.
+ *
+ * The destination comes from this app's own configured redirect URI, never from the request, so a
+ * caller cannot steer it.
+ *
+ * @param req the login request
+ * @param redirectUri the provider's registered redirect URI
+ * @returns the URL to send the browser to first, or undefined when it is already in the right place
+ */
+export function canonicalLoginUrl(
+  req: Request,
+  redirectUri: string | undefined,
+): string | undefined {
+  if (!redirectUri) return undefined;
+
+  const parse = (url: string): URL | undefined => {
+    try {
+      return new URL(url);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const callback = parse(redirectUri);
+  if (!callback) {
+    // A redirect URI we cannot parse is a configuration problem, but failing the login over it
+    // would turn a wrong-host warning into a dead connect button.
+    Logger.warn('OAuth redirect URI is not a valid URL; cannot canonicalize the login host');
+    return undefined;
+  }
+
+  const requestHostname = parse(`http://${req.headers.host ?? ''}`)?.hostname;
+  if (!requestHostname || requestHostname === callback.hostname) return undefined;
+
+  return `${callback.protocol}//${callback.host}${req.originalUrl}`;
+}
+
 const stateCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',

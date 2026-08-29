@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Logger } from '../lib/logger';
 import { getSecureCookieOptions } from '../auth/cookieParser';
-import { issueOAuthState, verifyOAuthState } from '../auth/oauthState';
+import { issueOAuthState, verifyOAuthState, canonicalLoginUrl } from '../auth/oauthState';
 import { validate, schemas, ValidatedRequest } from '../lib/validation';
 import { validateAndSerializeYouTubeTokens } from '../auth/cookieParser';
 import {
@@ -23,6 +23,14 @@ router.get('/login', (req, res) => {
   Logger.requestStart('YouTube Login Request', {
     requestUrl: req.originalUrl,
   });
+
+  // Before the cookie exists, not after: minting it on a host the callback will not be sent to
+  // guarantees a state mismatch.
+  const canonical = canonicalLoginUrl(req, process.env.YOUTUBE_REDIRECT_URI);
+  if (canonical) {
+    Logger.auth('YouTube', 'moving the login to the callback host', { canonical });
+    return res.redirect(canonical);
+  }
 
   const state = issueOAuthState(res, YOUTUBE_OAUTH_STATE_COOKIE);
   const url = getYoutubeAuthUrl(YOUTUBE_SCOPES, state);
