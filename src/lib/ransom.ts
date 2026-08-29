@@ -16,7 +16,8 @@
  * hand-pasted rather than as a repeating pattern.
  */
 
-/** How many distinct chip looks the stylesheet defines (`.ransom__chip--v0` … `--v3`). */
+/** How many distinct chip looks the stylesheet defines (`.ransom__chip--v0` … `--v3`). Adding one
+ * here without adding the matching class renders letters with no styling at all. */
 export const RANSOM_VARIANTS = 4;
 
 export interface RansomChip {
