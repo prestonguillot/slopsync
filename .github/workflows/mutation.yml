@@ -52,7 +52,10 @@ jobs:
 
   full-sweep:
     name: Full sweep
-    if: github.event_name != 'pull_request'
+    # Named events rather than "not a pull request": this runs the suite once per mutant and takes
+    # over half an hour, so anything that reaches it by accident - a merge_group trigger added here
+    # later, say - costs that on every queued merge.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Generous on purpose: this runs the test suite once per mutant, and nothing is waiting on it.
     # The cost of being wrong is losing an hour of work to a kill; the cost of the ceiling being
