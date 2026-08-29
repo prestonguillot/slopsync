@@ -12,9 +12,7 @@
  */
 import { test } from '@playwright/test';
 import { argosScreenshot } from '@argos-ci/playwright';
-import path from 'path';
-import ejs from 'ejs';
-import { CSS, ROOT, renderString, playlistItem, setTheme, currentTheme } from './helpers';
+import { CSS, renderFile, renderString, playlistItem, setTheme, currentTheme } from './helpers';
 
 test.beforeEach(({}, testInfo) => setTheme((testInfo.project.metadata.theme as string) ?? 'light'));
 
@@ -23,7 +21,7 @@ const fullDoc = (body: string) =>
    body{margin:0}</style></head><body>${body}</body></html>`;
 
 async function indexBody(): Promise<string> {
-  const html = await ejs.renderFile(path.join(ROOT, 'views/index.ejs'), { csrfToken: 'test' });
+  const html = await renderFile('views/index.ejs', { csrfToken: 'test' });
   return html.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] ?? html;
 }
 
