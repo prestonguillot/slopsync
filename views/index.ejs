@@ -40,12 +40,15 @@
                         <div class="card h-100 torn-top">
                             <div class="card-body text-center">
                                 <h5 class="card-title">SPOTIFY</h5>
-                                <%# Loaded once. Every operation validates and refreshes its own
+                                <%# Loaded once, then again only when something discovers the
+                                    session is gone. Every operation validates and refreshes its own
                                     token on demand, so polling keeps nothing alive - it would only
-                                    re-check a connection nobody is using. %>
+                                    re-check a connection nobody is using. But without the event
+                                    this said "Connected" over a panel already offering a reconnect,
+                                    until the page was reloaded by hand. %>
                                 <div id="spotify-status"
                                      hx-get="/api/status/spotify/button"
-                                     hx-trigger="load"
+                                     hx-trigger="load, auth-expired-spotify from:body"
                                      hx-swap="innerHTML">
                                     <button class="btn btn-success connect-btn disabled" disabled>
                                         <span class="d-flex align-items-center justify-content-center">
@@ -63,7 +66,7 @@
                                 <h5 class="card-title">YOUTUBE</h5>
                                 <div id="youtube-status"
                                      hx-get="/api/status/youtube/button"
-                                     hx-trigger="load"
+                                     hx-trigger="load, auth-expired-youtube from:body"
                                      hx-swap="innerHTML">
                                     <button class="btn btn-danger connect-btn disabled" disabled>
                                         <span class="d-flex align-items-center justify-content-center">

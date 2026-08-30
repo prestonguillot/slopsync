@@ -37,6 +37,36 @@ export class SpotifyApiError extends Error {
   }
 }
 
+/**
+ * Spotify answered 200 with a body that contradicts itself: a non-zero total, and no items.
+ *
+ * Its own name, because the two things it sits between are indistinguishable without it. An empty
+ * account is this same shape minus the total, and a real API failure never reaches here at all - so
+ * returning an empty list would render "you have no playlists" to someone who has sixty-three.
+ */
+export class SpotifyIncompleteResponseError extends Error {
+  readonly reportedTotal: number;
+  constructor(reportedTotal: number) {
+    super(`Spotify reported ${reportedTotal} playlists but returned none`);
+    this.name = 'SpotifyIncompleteResponseError';
+    this.reportedTotal = reportedTotal;
+  }
+}
+
+/**
+ * Does this token-endpoint failure mean Spotify is unavailable, rather than the token being dead?
+ *
+ * RFC 6749 §5.2 defines `temporarily_unavailable` and `server_error` as "the authorization server
+ * is overloaded or currently down". Neither says anything about the token. Read as an auth failure
+ * they send the user to re-authorize an account that is fine - during the one window where the
+ * re-authorization cannot succeed either.
+ */
+export function isSpotifyUpstreamFailure(error: unknown): boolean {
+  if (!(error instanceof SpotifyApiError)) return false;
+  if (error.status >= 500) return true;
+  return /\b(?:temporarily_unavailable|server_error)\b/.test(error.body ?? '');
+}
+
 /** Parses a Retry-After header (delay in seconds, or an HTTP date) into seconds. */
 function parseRetryAfter(value: string | null): number | undefined {
   if (!value) return undefined;
@@ -187,6 +217,14 @@ async function tokenRequest(body: URLSearchParams): Promise<SpotifyTokenSet> {
         retryAfterHeader,
       });
     }
+    // The status, not just the parsed body. `message` is overwritten above whenever the body
+    // carries an OAuth error code, so a 503 reads as bare "temporarily_unavailable" with nothing
+    // to say it was a 503 - which is how an outage had to be confirmed by hand with curl.
+    Logger.warn('Spotify token request failed', {
+      status: response.status,
+      url: `${ACCOUNTS_BASE}/api/token`,
+      body: text.slice(0, 300),
+    });
     throw new SpotifyApiError(message, response.status, text, retryAfter);
   }
 
@@ -299,9 +337,11 @@ export async function getUserPlaylists(accessToken: string): Promise<SpotifyPlay
   }
 
   // Spotify saying it holds playlists while handing back none is the difference between an empty
-  // account and a broken response; without the total, both arrive here as zero.
+  // account and a broken response; without the total, both arrive here as zero. Thrown rather than
+  // logged and returned: the caller renders a list, and an empty one reads as an emptied account.
   if (all.length === 0 && (reportedTotal ?? 0) > 0) {
     Logger.warn('Spotify reports playlists but returned none', { reportedTotal });
+    throw new SpotifyIncompleteResponseError(reportedTotal!);
   }
 
   Logger.debug('Fetched Spotify user playlists', { count: all.length, reportedTotal });

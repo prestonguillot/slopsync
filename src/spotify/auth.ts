@@ -9,7 +9,12 @@
  */
 
 import { Request, Response } from 'express';
-import { getCurrentUser, refreshAccessToken, SpotifyApiError } from './client';
+import {
+  getCurrentUser,
+  refreshAccessToken,
+  SpotifyApiError,
+  isSpotifyUpstreamFailure,
+} from './client';
 import {
   getSecureCookieOptions,
   parseSpotifyTokenCookie,
@@ -62,6 +67,14 @@ export async function resolveSpotifyToken(
       return { status: 'refreshed', accessToken: updated.accessToken };
     } catch (refreshError) {
       Logger.error('Failed to refresh Spotify token', {}, refreshError);
+      // A refresh that failed because Spotify is down says nothing about the token. Calling that
+      // 'expired' asks the user to reconnect, which is both wrong and impossible while the auth
+      // service is the thing that is broken.
+      if (isSpotifyUpstreamFailure(refreshError)) {
+        const statusCode =
+          refreshError instanceof SpotifyApiError ? refreshError.status : undefined;
+        return { status: 'error', statusCode, error: refreshError };
+      }
       return { status: 'expired', error: refreshError };
     }
   }
@@ -80,6 +93,12 @@ export async function ensureValidSpotifyToken(req: Request, res: Response): Prom
   const outcome = await resolveSpotifyToken(tokens, res);
   if (outcome.status === 'valid' || outcome.status === 'refreshed') {
     return outcome.accessToken;
+  }
+  // 'error' is Spotify being unreachable, throttled or broken - not the user's session. Rethrown
+  // as itself so callers branch on its status (503 -> "Spotify is temporarily unavailable") rather
+  // than offering a reconnect that fixes nothing.
+  if (outcome.status === 'error') {
+    throw outcome.error;
   }
   throw new Error('SPOTIFY_AUTH_REQUIRED', { cause: outcome.error });
 }
