@@ -66,11 +66,12 @@ describe('The press', () => {
     expect(rule('.playlist-item:hover .playlist-cover')).toContain('filter: none');
   });
 
-  it('prints the bleeds 1-bit, and inverts them on dark paper', () => {
-    // Without the invert the picture's dark areas sink into the near-black card and only its
-    // highlights survive - you see the bleed's negative space instead of the bleed.
+  it('runs both bleeds through the press, unmodified in either theme', () => {
+    // The inks carry their own colour now, so there is nothing to flip for dark paper - and an
+    // invert would send cyan to red and magenta to green, which stops it being a print of the
+    // cover at all.
     expect(css).toMatch(/--bleed-print:\s*url\('#print-bleed'\);/);
-    expect(css).toMatch(/--bleed-print:\s*url\('#print-bleed'\) invert\(1\);/);
+    expect(css).not.toMatch(/--bleed-print:[^;]*invert/);
     expect(rule('.track-bleed::after')).toContain('filter: var(--bleed-print)');
     expect(rule('.playlist-item--art::after')).toContain('filter: var(--bleed-print)');
   });
@@ -152,15 +153,35 @@ describe('Hovers', () => {
     expect(rule('.youtube-video__thumbnail--clickable:hover')).not.toContain('filter:');
   });
 
-  it('screens the bleed instead of thresholding it', () => {
-    // A 1-bit threshold has no dithering: on real album art every tone either clears the line or
-    // does not, and the picture collapses into black and white continents. A halftone carries tone
-    // in the size of each dot.
+  it('posterises the bleed rather than screening it to dots', () => {
+    // Every screened version of this - 1-bit, halftone, finer rulings, more inks - keeps only what
+    // clears the line, so a cover whose subject is small or low in contrast arrives as blobs. Tone
+    // has to be carried in the LEVELS, which is what survives a low-contrast source.
     const bleed = filters.match(/<filter\s+id="print-bleed"[\s\S]*?<\/filter>/)?.[0] ?? '';
 
-    expect(bleed).toContain('feTile');
-    expect(bleed).toContain('operator="arithmetic"');
-    expect(bleed).toContain('feFuncA'); // the alpha the arithmetic would otherwise halve
+    expect(bleed).not.toContain('feTile'); // no screen to threshold against
+    expect(bleed).toMatch(/type="discrete"\s+tableValues="[\d. ]{6,}"/); // more than two levels
+  });
+
+  it('prints the bleed from three inks, each off register', () => {
+    // One ink cannot describe a colour cover, and plates that line up read as a filter rather than
+    // as printing. Both are what make it a press instead of an effect.
+    const bleed = filters.match(/<filter\s+id="print-bleed"[\s\S]*?<\/filter>/)?.[0] ?? '';
+    const offsets = [...bleed.matchAll(/<feOffset[^>]*dx="(-?[\d.]+)"[^>]*dy="(-?[\d.]+)"/g)];
+
+    expect(offsets).toHaveLength(3);
+    // Three DIFFERENT slips: identical ones would print the inks on top of each other and there
+    // would be no misregistration to see.
+    expect(new Set(offsets.map((m) => `${m[1]},${m[2]}`)).size).toBe(3);
+    expect(offsets.every((m) => Number(m[1]) !== 0 || Number(m[2]) !== 0)).toBe(true);
+  });
+
+  it('overprints the plates rather than adding them', () => {
+    // Ink is subtractive: two plates over each other darken. `screen` would brighten, and the
+    // bleed would wash out exactly where the cover is densest.
+    const bleed = filters.match(/<filter\s+id="print-bleed"[\s\S]*?<\/filter>/)?.[0] ?? '';
+
+    expect([...bleed.matchAll(/<feBlend[^>]*mode="multiply"/g)]).toHaveLength(2);
   });
 
   it('leaves no tape behind', () => {

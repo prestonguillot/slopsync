@@ -39,8 +39,8 @@
      dark page; light mode needs none (paper-on-page contrast already shows it). */
   --torn: url('/images/torn-edge.svg');
   --tear-rim: rgba(0, 0, 0, 0);
-  /* The bleed is printed 1-bit: on white paper that's black ink and reads as a picture. See the
-     dark override, which is not cosmetic. */
+  /* The bleed is printed riso: three spot inks, posterised and off register. Both themes use it
+     as-is - the inks carry their own colour, so there is nothing to flip for dark paper. */
   --bleed-print: url('#print-bleed');
   /* Ransom chips are pasted on the card header, which is #000 in BOTH themes - so this is a fixed
      paper colour and deliberately has no dark override. Flipping it would hide the scraps against
@@ -66,11 +66,6 @@
   --row-plate: rgba(255, 0, 64, 0.24);
   /* Darker than the #171717 card - the row drops away as its picture comes up. */
   --row-hover: #070707;
-
-  /* Dark paper needs light ink. Without the invert the picture's dark areas sink into the
-     near-black card and only its highlights survive - you end up looking at the bleed's negative
-     space instead of the bleed. */
-  --bleed-print: url('#print-bleed') invert(1);
 
   /* Photocopy-zine page background (dark): near-black page, gentle light toner/speckle. */
   --page: #0c0c0c;
@@ -629,9 +624,9 @@ body::after {
   background-image: var(--album-art);
   background-size: cover;
   background-position: center;
-  /* Blown out to 1-bit, and dense: the artist is overprinted on top of this, and a faint bleed
-     gives the type nothing to sit on. Unlike a thumbnail there is nothing here to read, so the
-     picture can be destroyed freely. */
+  /* Dense: the artist is overprinted on top of this, and a faint bleed gives the type nothing to
+     sit on. The press keeps enough of the cover to be recognisable, so this is a print of the art
+     rather than texture standing in for one. */
   opacity: 0.78;
   filter: var(--bleed-print);
   mask-image: linear-gradient(to left, #000 40%, transparent 100%);
@@ -1861,10 +1856,10 @@ img.youtube-video__thumbnail {
   background-image: var(--playlist-art);
   background-size: cover;
   background-position: center;
-  /* Printed 1-bit, same as the track-row bleed. ONE filter declaration: this rule carried a second
-     `filter: contrast(1.1) saturate(1.2)` further down, which silently won on cascade order and
-     left the cover a faded colour photograph while every test asserting the print "passed" - the
-     string was in the file, doing nothing. */
+  /* Same press as the track-row bleed. ONE filter declaration: a second
+     `filter: contrast(1.1) saturate(1.2)` further down this rule wins on cascade order and leaves
+     the cover a faded colour photograph, while a test asserting the print still passes on finding
+     the string in the file. */
   filter: var(--bleed-print);
   opacity: 0.72;
   mask-image: linear-gradient(to left, #000 40%, transparent 100%);

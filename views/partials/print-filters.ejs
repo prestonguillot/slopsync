@@ -80,65 +80,61 @@
       <feComposite in="screened" in2="grain" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" />
     </filter>
 
-    <%# The bleed: one ink, screened into dots.
+    <%# The bleed: three spot inks, posterised and slipped off register.
 
-        This was a plain 1-bit threshold, and on real album art it blew out - a threshold has no
-        dithering, so every tone either clears the line or does not and the picture collapses into
-        black and white continents. A halftone keeps the same single ink but carries tone in the
-        SIZE of each dot, which is how a press prints a photograph at all. The screen is coarse on
-        purpose: this is a bleed at 300px, not a thumbnail, and the dots should read as dots.
+        No threshold, and that is the whole point. Every screened version of this - 1-bit, halftone,
+        finer rulings, more inks - keeps only what clears the line, so a cover whose subject is
+        small or low in contrast arrives as blobs with nothing to recognise. A photocopy really does
+        destroy such a picture; zines get away with it because the maker picks high-contrast images,
+        and album art cannot be picked.
 
-        Inverted for the dark theme in style.css via --bleed-print: on near-black paper the
-        picture's dark areas sink into the card and you end up looking at its negative space. %>
+        So the reference moves from photocopier to risograph, which is still cheap printing: flat
+        posterised levels, a handful of spot inks, and plates that never quite line up. Tone is
+        carried in the LEVELS rather than in dot size, which is what survives a low-contrast source.
+
+        No dark-theme inversion, unlike the 1-bit version it replaces: inverting these would send
+        cyan to red and magenta to green, and the bleed would stop being a print of the cover. %>
     <filter
       id="print-bleed"
-      x="0%"
-      y="0%"
-      width="100%"
-      height="100%"
+      x="-4%"
+      y="-4%"
+      width="108%"
+      height="108%"
       color-interpolation-filters="sRGB"
     >
-      <feColorMatrix
-        type="matrix"
-        values="0.2126 0.7152 0.0722 0 0  0.2126 0.7152 0.0722 0 0  0.2126 0.7152 0.0722 0 0  0 0 0 1 0"
-        result="gray"
-      />
-      <%# Opened up a little before screening: a bleed sits under text, so the midtones want to
-          land where the dots can describe them rather than crushing to solid ink. %>
-      <feComponentTransfer in="gray" result="boost">
-        <feFuncR type="linear" slope="1.15" intercept="0.02" />
-        <feFuncG type="linear" slope="1.15" intercept="0.02" />
-        <feFuncB type="linear" slope="1.15" intercept="0.02" />
+      <%# CYAN plate. The channel becomes ink coverage, flattened to five levels, tinted,
+          then slipped -2/1.5px - the misregistration that says "printed" rather than "filtered". %>
+      <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  1 0 0 0 0  1 0 0 0 0  0 0 0 1 0" result="cyanInk"/>
+      <feComponentTransfer in="cyanInk" result="cyanLevels">
+        <feFuncR type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+        <feFuncG type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+        <feFuncB type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
       </feComponentTransfer>
-      <%# The screen: white at each cell's centre falling to black at its edges. Thresholding the
-          picture against THAT is what makes the dot grow as the image darkens. %>
-      <feImage
-        href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3IiBoZWlnaHQ9IjciPjxkZWZzPjxyYWRpYWxHcmFkaWVudCBpZD0iZyIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiNmZmYiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMwMDAiLz48L3JhZGlhbEdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iNyIgaGVpZ2h0PSI3IiBmaWxsPSJ1cmwoI2cpIi8+PC9zdmc+"
-        x="0"
-        y="0"
-        width="7"
-        height="7"
-        result="cell"
-      />
-      <feTile in="cell" result="screen" />
-      <feComposite
-        in="boost"
-        in2="screen"
-        operator="arithmetic"
-        k1="0"
-        k2="1"
-        k3="-1"
-        k4="0.5"
-        result="diff"
-      />
-      <feComponentTransfer in="diff">
-        <feFuncR type="discrete" tableValues="0 1" />
-        <feFuncG type="discrete" tableValues="0 1" />
-        <feFuncB type="discrete" tableValues="0 1" />
-        <%# feComposite's arithmetic runs on alpha too: 1 - 1 + 0.5 leaves every pixel half
-            transparent and the card shows straight through the bleed. %>
-        <feFuncA type="linear" slope="0" intercept="1" />
+      <feColorMatrix in="cyanLevels" type="matrix" values="1 0 0 0 0  0.38 0 0 0 0.62  0.22 0 0 0 0.78  0 0 0 1 0" result="cyanTinted"/>
+      <feOffset in="cyanTinted" dx="-2" dy="1.5" result="cyan"/>
+      <%# MAGENTA plate. The channel becomes ink coverage, flattened to five levels, tinted,
+          then slipped 2/-1.5px - the misregistration that says "printed" rather than "filtered". %>
+      <feColorMatrix in="SourceGraphic" type="matrix" values="0 1 0 0 0  0 1 0 0 0  0 1 0 0 0  0 0 0 1 0" result="magentaInk"/>
+      <feComponentTransfer in="magentaInk" result="magentaLevels">
+        <feFuncR type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+        <feFuncG type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+        <feFuncB type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
       </feComponentTransfer>
+      <feColorMatrix in="magentaLevels" type="matrix" values="0.15 0 0 0 0.85  0.95 0 0 0 0.05  0.58 0 0 0 0.42  0 0 0 1 0" result="magentaTinted"/>
+      <feOffset in="magentaTinted" dx="2" dy="-1.5" result="magenta"/>
+      <%# YELLOW plate. The channel becomes ink coverage, flattened to five levels, tinted,
+          then slipped 0.5/2px - the misregistration that says "printed" rather than "filtered". %>
+      <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 1 0 0  0 0 1 0 0  0 0 1 0 0  0 0 0 1 0" result="yellowInk"/>
+      <feComponentTransfer in="yellowInk" result="yellowLevels">
+        <feFuncR type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+        <feFuncG type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+        <feFuncB type="discrete" tableValues="0 0.25 0.5 0.75 1"/>
+      </feComponentTransfer>
+      <feColorMatrix in="yellowLevels" type="matrix" values="0.02 0 0 0 0.98  0.15 0 0 0 0.85  0.94 0 0 0 0.06  0 0 0 1 0" result="yellowTinted"/>
+      <feOffset in="yellowTinted" dx="0.5" dy="2" result="yellow"/>
+      <%# Multiply, because ink is subtractive: two plates over each other darken, they do not add. %>
+      <feBlend in="cyan" in2="magenta" mode="multiply" result="cm"/>
+      <feBlend in="cm" in2="yellow" mode="multiply"/>
     </filter>
   </defs>
 </svg>
