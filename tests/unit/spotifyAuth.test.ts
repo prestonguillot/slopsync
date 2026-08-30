@@ -177,11 +177,37 @@ describe('ensureValidSpotifyToken', () => {
     );
   });
 
-  // "Reconnect" with no cause is unfixable from a log - a 429 and a dead token look identical.
-  it('carries what went wrong as the cause', async () => {
-    const cause = new SpotifyApiError('slow down', 429);
-    h.getCurrentUser.mockRejectedValue(cause);
+  // "Reconnect" with no cause is unfixable from a log - a dead token has to name what killed it.
+  it('carries what went wrong as the cause when the session really is gone', async () => {
+    const cause = new SpotifyApiError('invalid_grant', 400);
+    h.getCurrentUser.mockRejectedValue(new SpotifyApiError('expired', 401));
+    h.refresh.mockRejectedValue(cause);
 
     await expect(ensureValidSpotifyToken(req(cookie), res())).rejects.toMatchObject({ cause });
+  });
+
+  it.each([
+    ['a rate limit', new SpotifyApiError('slow down', 429)],
+    ['an outage', new SpotifyApiError('temporarily_unavailable', 503)],
+  ])('propagates %s as itself, not as a reconnect prompt', async (_label, upstream) => {
+    // Spotify being throttled or down says nothing about the session. Reporting it as
+    // SPOTIFY_AUTH_REQUIRED sends the user to re-authorize an account that is fine.
+    h.getCurrentUser.mockRejectedValue(upstream);
+
+    await expect(ensureValidSpotifyToken(req(cookie), res())).rejects.toBe(upstream);
+  });
+
+  it('does not call a failed refresh "expired" when Spotify is the thing that is down', async () => {
+    // The 2026-07-16 outage exactly: a valid token, a 401 that triggers a refresh, and a token
+    // endpoint returning 503 temporarily_unavailable. Nothing was wrong with the account.
+    const outage = new SpotifyApiError(
+      'Spotify token request failed: temporarily_unavailable',
+      503,
+      '{"error":"temporarily_unavailable"}',
+    );
+    h.getCurrentUser.mockRejectedValue(new SpotifyApiError('expired', 401));
+    h.refresh.mockRejectedValue(outage);
+
+    await expect(ensureValidSpotifyToken(req(cookie), res())).rejects.toBe(outage);
   });
 });

@@ -5,7 +5,7 @@ import { Logger } from '../lib/logger';
 import { renderPartial } from '../lib/renderPartial';
 import { validate, schemas, ValidatedRequest } from '../lib/validation';
 import { csrfValidationMiddleware } from '../auth/csrf';
-import { authExpired } from '../auth/authExpired';
+import { authExpired, signalAuthExpired } from '../auth/authExpired';
 import { SpotifyTokens, YouTubeTokens } from '../types/oauth';
 import { parseSpotifyTokenCookie, parseYouTubeTokenCookie } from '../auth/cookieParser';
 import { z } from 'zod';
@@ -92,6 +92,7 @@ router.get(
     } catch (error) {
       const expired = authExpired(error);
       if (expired) {
+        signalAuthExpired(res, expired);
         return res.status(401).send(await renderPartial('auth-expired.ejs', { ...expired }));
       }
       Logger.error('Sync stream auth failed', { playlistId }, error);

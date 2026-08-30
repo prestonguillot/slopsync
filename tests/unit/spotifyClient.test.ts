@@ -17,6 +17,8 @@ import {
   refreshAccessToken,
   getCurrentUser,
   getUserPlaylists,
+  SpotifyIncompleteResponseError,
+  isSpotifyUpstreamFailure,
   getPlaylist,
   SpotifyApiError,
 } from '../../src/spotify/client';
@@ -200,26 +202,31 @@ describe('getUserPlaylists: when playlists go missing', () => {
     });
   });
 
-  // The reported failure: every entry null, so the page filters to nothing and the user sees an
-  // empty library with no error anywhere.
-  it('says so when Spotify claims playlists but hands back none', async () => {
+  // The reported failure: every entry null, so the page filters to nothing and the user saw an
+  // empty library with no error anywhere - which reads as an emptied account, not a bad response.
+  it('fails rather than reporting an empty account when Spotify hands back none', async () => {
     const warn = vi.spyOn(Logger, 'warn');
     mockFetch.mockResolvedValue(okJson({ next: null, total: 47, items: [null, null] }));
 
-    const playlists = await getUserPlaylists('AT');
-
-    expect(playlists).toEqual([]);
+    await expect(getUserPlaylists('AT')).rejects.toBeInstanceOf(SpotifyIncompleteResponseError);
     expect(warn).toHaveBeenCalledWith('Spotify reports playlists but returned none', {
       reportedTotal: 47,
     });
   });
 
-  it('stays quiet for an account that genuinely has none', async () => {
+  it('carries the total it was promised, so the caller can say how many are missing', async () => {
+    mockFetch.mockResolvedValue(okJson({ next: null, total: 63, items: [] }));
+
+    await expect(getUserPlaylists('AT')).rejects.toMatchObject({ reportedTotal: 63 });
+  });
+
+  it('returns an empty list, quietly, for an account that genuinely has none', async () => {
+    // The distinction the error exists for: no total means nothing is missing, so this is a fact
+    // about the account rather than a failure, and must neither warn nor throw.
     const warn = vi.spyOn(Logger, 'warn');
     mockFetch.mockResolvedValue(okJson({ next: null, total: 0, items: [] }));
 
-    await getUserPlaylists('AT');
-
+    await expect(getUserPlaylists('AT')).resolves.toEqual([]);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -420,5 +427,44 @@ describe('error mapping', () => {
     expect(err).toBeInstanceOf(SpotifyApiError);
     expect(err.status).toBe(403);
     expect(err.body).toBe('forbidden text');
+  });
+});
+
+describe('isSpotifyUpstreamFailure', () => {
+  // RFC 6749 §5.2: these mean the authorization server is overloaded or down. Read as auth
+  // failures they send the user to re-authorize an account that is fine, during the one window
+  // where re-authorizing cannot work either.
+  it.each([
+    ['a 503', new SpotifyApiError('temporarily_unavailable', 503)],
+    ['a 500', new SpotifyApiError('boom', 500)],
+    ['a 502', new SpotifyApiError('bad gateway', 502)],
+  ])('treats %s as Spotify being down', (_label, error) => {
+    expect(isSpotifyUpstreamFailure(error)).toBe(true);
+  });
+
+  it.each([
+    ['temporarily_unavailable', '{"error":"temporarily_unavailable"}'],
+    ['server_error', '{"error":"server_error"}'],
+  ])('reads %s from the body even on a 4xx', (_label, body) => {
+    // Spotify has answered 400 with an outage code; the body is the authoritative signal.
+    expect(isSpotifyUpstreamFailure(new SpotifyApiError('x', 400, body))).toBe(true);
+  });
+
+  it.each([
+    [
+      'a dead refresh token',
+      new SpotifyApiError('invalid_grant', 400, '{"error":"invalid_grant"}'),
+    ],
+    ['a rejected token', new SpotifyApiError('unauthorized', 401)],
+    ['a non-Spotify error', new Error('socket hang up')],
+  ])('does not mistake %s for an outage', (_label, error) => {
+    expect(isSpotifyUpstreamFailure(error)).toBe(false);
+  });
+
+  it('does not match an error code that merely contains one of the words', () => {
+    // Substring matching would classify "not_temporarily_unavailable_at_all" as an outage.
+    expect(
+      isSpotifyUpstreamFailure(new SpotifyApiError('x', 400, '{"error":"invalid_grant_error"}')),
+    ).toBe(false);
   });
 });

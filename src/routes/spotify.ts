@@ -1,7 +1,7 @@
 import { Router, Request } from 'express';
 import { YoutubeApiError, YtPlaylist } from '../youtube/client';
 import { ensureValidYouTubeToken } from '../youtube/auth';
-import { authExpired } from '../auth/authExpired';
+import { authExpired, signalAuthExpired } from '../auth/authExpired';
 import { Logger } from '../lib/logger';
 import { getSecureCookieOptions } from '../auth/cookieParser';
 import { validate, schemas, ValidatedRequest } from '../lib/validation';
@@ -21,6 +21,7 @@ import {
   getUserPlaylists,
   getPlaylist,
   SpotifyApiError,
+  SpotifyIncompleteResponseError,
 } from '../spotify/client';
 import { ensureValidSpotifyToken } from '../spotify/auth';
 import {
@@ -329,6 +330,7 @@ router.get(
       // offered. Either service can be the one that ran out here.
       const expired = authExpired(error);
       if (expired) {
+        signalAuthExpired(res, expired);
         return res.status(401).render('partials/auth-expired', { ...expired });
       }
 
@@ -340,6 +342,16 @@ router.get(
           message: 'Spotify is temporarily unavailable',
           type: 'warning',
           details: "Spotify's servers are experiencing issues. Please try again in a few moments.",
+        });
+      }
+
+      // A 200 whose body contradicts itself. Named explicitly, because the alternative rendering -
+      // an empty playlist list - tells someone with sixty-three playlists that they have none.
+      if (error instanceof SpotifyIncompleteResponseError) {
+        return res.status(502).render('partials/error-message', {
+          message: 'Spotify did not return your playlists',
+          type: 'warning',
+          details: `Spotify says you have ${error.reportedTotal}, but sent none of them. Nothing has changed on your account - try again in a moment.`,
         });
       }
 

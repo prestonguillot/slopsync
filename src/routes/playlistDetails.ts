@@ -9,7 +9,7 @@ import { formatErrorDetails } from '../lib/errorFormatter';
 import { escapeHtml } from '../lib/htmlEscape';
 import { ensureValidYouTubeToken } from '../youtube/auth';
 import { ensureValidSpotifyToken } from '../spotify/auth';
-import { authExpired } from '../auth/authExpired';
+import { authExpired, signalAuthExpired } from '../auth/authExpired';
 import { classifyYoutubeError } from '../youtube/writes';
 import { z } from 'zod';
 import ejs from 'ejs';
@@ -165,6 +165,7 @@ router.get(
       // A session that has run out is not "try again" - trying again is exactly what does not work.
       const expired = authExpired(error);
       if (expired) {
+        signalAuthExpired(res, expired);
         return res.status(401).render('partials/auth-expired', { ...expired });
       }
 
@@ -470,6 +471,7 @@ router.post(
       // way, and the one thing that would fix it is never offered.
       const expired = authExpired(error);
       if (expired) {
+        signalAuthExpired(res, expired);
         return res.status(401).render('partials/auth-expired', { ...expired });
       }
 

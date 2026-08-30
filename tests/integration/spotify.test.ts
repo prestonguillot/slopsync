@@ -8,7 +8,12 @@ import { findSetCookie } from '@tests/helpers/httpCookies';
 import { youtubeCircuitBreaker } from '@/lib/circuitBreaker';
 import { createApp } from '@/app';
 import { testServer } from '@tests/helpers/testServer';
-import { getAuthorizeUrl, getCurrentUser, getUserPlaylists } from '@/spotify/client';
+import {
+  getAuthorizeUrl,
+  getCurrentUser,
+  getUserPlaylists,
+  SpotifyIncompleteResponseError,
+} from '@/spotify/client';
 import { YoutubeApiError } from '@/youtube/client';
 
 // Helper to create valid YouTube token cookies (with all required Zod fields)
@@ -510,6 +515,20 @@ describe('Spotify Playlists', () => {
     })}`;
     const list = (cookies: string[]) =>
       request(app).get('/auth/spotify/playlists').set('Cookie', cookies);
+
+    it('says the fetch failed when Spotify promises playlists and sends none', async () => {
+      // The 2026-07-16 outage: a 200 carrying {items: [], total: 63}. Rendering the ordinary empty
+      // state tells someone with 63 playlists that they have none, which reads as data loss.
+      mockedGetCurrentUser.mockResolvedValue({ id: 'me', displayName: null });
+      mockedGetUserPlaylists.mockRejectedValue(new SpotifyIncompleteResponseError(63));
+
+      const response = await list([spotifyCookie]);
+
+      expect(response.status).toBe(502);
+      expect(response.text).toContain('Spotify did not return your playlists');
+      expect(response.text).toContain('63');
+      expect(response.text).not.toMatch(/no playlists|Showing 0/i);
+    });
 
     it('keeps only the current user’s playlists when ownOnly is set', async () => {
       mockedGetCurrentUser.mockResolvedValue({ id: 'me', displayName: null });
