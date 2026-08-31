@@ -211,35 +211,80 @@ async function fetchShowingRedirects(
  * Anything unreadable yields fewer results rather than throwing - a search that finds nothing is
  * recoverable, a sync that dies is not.
  */
+const YT_INITIAL_DATA = 'var ytInitialData = ';
+
+/**
+ * The index of the `}` closing the object that opens at `from`, or -1 if it never closes.
+ *
+ * Needed because the object cannot be matched with a regex. `{.*?}` is lazy and stops at the first
+ * `};`, and a YouTube search page carries that sequence inside string values often enough that the
+ * capture is truncated on most searches - the JSON is then invalid, parsing throws, and the page
+ * reads as "no results". `{.*}` is no better: greedy, it runs past the object to the last `};` on
+ * the line. Depth counting is the only way to find the real end, and it has to ignore braces inside
+ * strings and anything escaped.
+ */
+export function findObjectEnd(source: string, from: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = from; i < source.length; i++) {
+    const char = source[i];
+
+    if (escaped) {
+      escaped = false;
+    } else if (char === '\\') {
+      escaped = true;
+    } else if (char === '"') {
+      inString = !inString;
+    } else if (!inString) {
+      if (char === '{') depth++;
+      else if (char === '}' && --depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 export function parseSearchResultsHtml(html: string, maxResults: number): SearchResult[] {
   const $ = cheerio.load(html);
   const results: SearchResult[] = [];
 
   // YouTube embeds the results as JSON in a script tag.
   let videoData: YouTubeScrapedVideoData[] = [];
+  let sawInitialData = false;
 
   $('script').each((_i, elem) => {
     const scriptContent = $(elem).html();
-    if (scriptContent && scriptContent.includes('var ytInitialData')) {
-      try {
-        // NOTE: `.` does not match newlines and the quantifier is lazy, so this only finds
-        // ytInitialData when it is minified onto one line and contains no `};` inside a string.
-        const match = scriptContent.match(/var ytInitialData = ({.*?});/);
-        if (match && match[1]) {
-          const data = JSON.parse(match[1]);
-          const contents =
-            data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer
-              ?.contents;
+    if (!scriptContent?.includes(YT_INITIAL_DATA)) return;
+    sawInitialData = true;
 
-          if (contents && contents[0]?.itemSectionRenderer?.contents) {
-            videoData = contents[0].itemSectionRenderer.contents;
-          }
-        }
-      } catch {
-        // A script tag we cannot parse is not fatal - keep looking at the others.
+    const start = scriptContent.indexOf(YT_INITIAL_DATA) + YT_INITIAL_DATA.length;
+    const end = findObjectEnd(scriptContent, start);
+    if (end === -1) return;
+
+    try {
+      const data = JSON.parse(scriptContent.slice(start, end + 1));
+      const contents =
+        data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer
+          ?.contents;
+
+      if (contents && contents[0]?.itemSectionRenderer?.contents) {
+        videoData = contents[0].itemSectionRenderer.contents;
       }
+    } catch {
+      // A script tag we cannot parse is not fatal - keep looking at the others.
     }
   });
+
+  // A page that carried the data and still yielded nothing is a parser that has stopped
+  // understanding YouTube, not a search with no results. Those are indistinguishable to the caller
+  // - both return an empty list - so the difference has to be said out loud here or the next time
+  // YouTube changes its markup it will look like an artist nobody has uploaded.
+  if (sawInitialData && videoData.length === 0) {
+    Logger.warn('YouTube search page carried ytInitialData but no video items could be read', {
+      htmlLength: html.length,
+    });
+  }
 
   Logger.debug(`🔍 Found ${videoData.length} potential video items`);
 

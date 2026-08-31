@@ -12,12 +12,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   __resetCookieJar,
+  findObjectEnd,
   parseSearchResultsHtml,
   scrapeYouTubeSearch,
   searchAndScoreVideos,
   searchMusicVideo,
 } from '../../src/youtube/scraper';
 import { fakeResponse, redirectResponse, requestAt, stubFetchSequence } from '../helpers/fetchMock';
+import { Logger } from '../../src/lib/logger';
 
 /** A results page shaped the way YouTube serves one: results as JSON inside a script tag. */
 function ytHtml(videoRenderers: unknown[]): string {
@@ -520,5 +522,108 @@ describe('searchMusicVideo', () => {
     stubFetchSequence([fakeResponse({ body: ytHtml([]) })]);
 
     expect(await runLadder(searchMusicVideo('Radiohead', 'Creep'))).toBeNull();
+  });
+});
+
+/**
+ * The parse that used to give up on most real pages.
+ *
+ * `var ytInitialData = ({.*?});` is lazy, so it stopped at the first `};` in the script. YouTube
+ * search pages carry that sequence inside string values often enough that the capture was
+ * truncated on the majority of searches: the JSON came out invalid, parsing threw, and the page
+ * reported "no results". Measured against live YouTube it read 2 of 7 searches; depth counting
+ * read 7 of 7.
+ */
+describe('ytInitialData that contains the sequence the old regex stopped at', () => {
+  const withTitle = (title: string) => {
+    const data = {
+      contents: {
+        twoColumnSearchResultsRenderer: {
+          primaryContents: {
+            sectionListRenderer: {
+              contents: [
+                {
+                  itemSectionRenderer: {
+                    contents: [
+                      {
+                        videoRenderer: {
+                          videoId: 'vid42',
+                          title: { runs: [{ text: title }] },
+                          lengthText: { simpleText: '3:58' },
+                          viewCountText: { simpleText: '1.2M views' },
+                          longBylineText: { runs: [{ text: 'A Channel' }] },
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+    return `<html><body><script>var ytInitialData = ${JSON.stringify(data)};</script></body></html>`;
+  };
+
+  it('reads a page whose video title contains "};"', () => {
+    const html = withTitle('function(){};  live at the Forum');
+
+    const results = parseSearchResultsHtml(html, 5);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.videoId).toBe('vid42');
+  });
+
+  it('reads a page whose title contains a brace and an escaped quote', () => {
+    // The scan has to track escapes too: a `\"` inside a string must not be read as the quote that
+    // ends it, or every brace after it is counted in the wrong context.
+    const html = withTitle('he said \\"};\\" then {');
+
+    expect(parseSearchResultsHtml(html, 5)).toHaveLength(1);
+  });
+
+  it('says so when the data is there but nothing can be read from it', () => {
+    // "Cannot parse this page" and "this search has no results" both return an empty list. Only the
+    // log tells them apart, and without it a broken parser looks like an obscure artist.
+    const warn = vi.spyOn(Logger, 'warn');
+
+    const shapeChanged = `<html><body><script>var ytInitialData = {"contents":{"somethingElse":{}}};</script></body></html>`;
+    expect(parseSearchResultsHtml(shapeChanged, 5)).toEqual([]);
+
+    expect(warn).toHaveBeenCalledWith(
+      'YouTube search page carried ytInitialData but no video items could be read',
+      expect.objectContaining({ htmlLength: expect.any(Number) }),
+    );
+  });
+
+  it('stays quiet for a page that never carried the data', () => {
+    // Nothing to parse is not a parser failure - the bot gate and the redirect paths already
+    // report themselves, and warning here would cry wolf on every one of them.
+    const warn = vi.spyOn(Logger, 'warn');
+
+    expect(parseSearchResultsHtml('<html><body>nope</body></html>', 5)).toEqual([]);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('findObjectEnd', () => {
+  it('finds the close of a nested object', () => {
+    expect(findObjectEnd('{"a":{"b":1}}', 0)).toBe(12);
+  });
+
+  it('ignores braces inside strings', () => {
+    const src = '{"a":"}}}"}';
+    expect(findObjectEnd(src, 0)).toBe(src.length - 1);
+  });
+
+  it('ignores an escaped quote, which would otherwise flip string state', () => {
+    const src = '{"a":"\\"}"}';
+    expect(findObjectEnd(src, 0)).toBe(src.length - 1);
+  });
+
+  it('reports -1 when the object never closes', () => {
+    expect(findObjectEnd('{"a":{"b":1}', 0)).toBe(-1);
   });
 });
