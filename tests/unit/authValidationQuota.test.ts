@@ -60,7 +60,7 @@ describe('YouTube Auth Validation - Quota Handling', () => {
   describe('Circuit Breaker Token Clearing', () => {
     it('should return false when circuit breaker is open', async () => {
       // Open circuit breaker
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 
@@ -175,7 +175,7 @@ describe('YouTube Auth Validation - Quota Handling', () => {
       expect(youtubeCircuitBreaker.isOpen()).toBe(false);
 
       // Simulate quota exceeded
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       // Attempt validation - should fail and clear tokens
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
@@ -190,7 +190,7 @@ describe('YouTube Auth Validation - Quota Handling', () => {
       // When quota is exceeded, we clear tokens (disconnect) rather than
       // showing an error state with "QUOTA EXCEEDED" buttons
 
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       expect(youtubeCircuitBreaker.canProceed()).toBe(false);
 
       // User should see disconnected state (tokens cleared)
@@ -200,7 +200,7 @@ describe('YouTube Auth Validation - Quota Handling', () => {
 
   describe('Circuit Breaker State Management', () => {
     it('should prevent repeated API calls when circuit is open', async () => {
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       // Multiple validation attempts should all be blocked
       const result1 = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
@@ -226,7 +226,7 @@ describe('YouTube Auth Validation - Quota Handling', () => {
 
   describe('Error Message Feedback', () => {
     it('should return quota exceeded error message when circuit breaker is open', async () => {
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 

@@ -70,7 +70,7 @@ function toConnectionResult(
 
   // The service told us to back off - stop calling it until it resets.
   if (statusCode === quotaStatus) {
-    breaker.open();
+    breaker.open(`${service} reported its quota exhausted while validating the connection`);
     return {
       connected: false,
       error: `${service} API quota exceeded. Please try again later.`,

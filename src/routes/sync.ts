@@ -1,6 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { ensureValidYouTubeToken } from '../youtube/auth';
-import { classifyYoutubeError } from '../youtube/writes';
+import {
+  classifyYoutubeError,
+  describeRetryWait,
+  youtubeWritesBlocked,
+  YoutubeQuotaError,
+} from '../youtube/writes';
 import { Logger } from '../lib/logger';
 import { renderPartial } from '../lib/renderPartial';
 import { validate, schemas, ValidatedRequest } from '../lib/validation';
@@ -154,12 +159,23 @@ router.get(
       const failure = classifyYoutubeError(error);
       if (failure !== 'other') {
         Logger.warn('YouTube refused the sync on limits', { failure });
+        // Not always the daily quota: the breaker also opens after unrelated failures, and this
+        // said "your quota has been exceeded" for all of them - sending people to wait for a
+        // midnight reset that was never the problem.
+        const blocked = youtubeWritesBlocked();
+        const reason =
+          error instanceof YoutubeQuotaError ? error.reason : 'YouTube refused the request';
+        // No HX-Trigger here, unlike the other routes: the SSE headers went out with writeHead
+        // before the sync began, and setting one now throws ERR_HTTP_HEADERS_SENT. The partial
+        // carries a marker instead and the client raises the event when it lands.
         html = await renderPartial('sync-error.ejs', {
           playlistId,
-          title: 'YouTube Quota Exceeded',
-          message: 'Your YouTube API quota has been exceeded. YouTube limits API usage per day.',
-          details:
-            'The quota resets at midnight Pacific Time. You can continue using the app with existing playlists, but cannot sync new content until the quota resets.',
+          youtubeBlocked: true,
+          title: 'YouTube is not accepting changes',
+          message: `The sync stopped because ${reason}.`,
+          details: blocked
+            ? `Syncing is paused until this clears - try again ${describeRetryWait(blocked.retryAt)}. A daily quota resets at midnight Pacific.`
+            : 'Try again shortly. A daily quota resets at midnight Pacific.',
         });
       } else {
         html = await renderPartial('sync-error.ejs', {

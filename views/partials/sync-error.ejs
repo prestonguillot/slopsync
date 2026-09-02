@@ -1,3 +1,11 @@
-<div id="sync-result-<%= playlistId %>">
+<%# `details` and `youtubeBlocked` are optional, so both are probed with typeof - a bare reference
+    throws "not defined" for the callers that omit them and takes the whole render with it.
+
+    details was passed by the sync route and never rendered here, so the one line that said when the
+    quota resets has never reached the screen. The marker attribute is how the page learns to
+    disable its sync and edit controls: this arrives inside an already-open SSE stream, so the
+    HX-Trigger header the other routes use cannot be set by the time we know. %>
+<div id="sync-result-<%= playlistId %>"<% if (typeof youtubeBlocked !== 'undefined' && youtubeBlocked) { %> data-youtube-blocked="true"<% } %>>
   <strong><%= title %></strong><% if (message) { %><br><%= message %><% } %>
+  <% if (typeof details !== 'undefined' && details) { %><br><span class="small"><%= details %></span><% } %>
 </div>

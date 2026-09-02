@@ -30,6 +30,7 @@ class CircuitBreaker {
   private failureCount: number = 0;
   private successCount: number = 0;
   private nextAttemptTime: number = 0;
+  private openReason: string = '';
   private config: CircuitBreakerConfig;
   private name: string;
 
@@ -102,11 +103,12 @@ class CircuitBreaker {
     this.failureCount++;
 
     if (this.state === CircuitState.HALF_OPEN) {
+      const detail = error instanceof Error ? error.message : 'Unknown error';
       Logger.warn(`Circuit breaker opening after failure in HALF_OPEN state`, {
         name: this.name,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: detail,
       });
-      this.open();
+      this.open(`a probe request failed while recovering: ${detail}`);
     } else if (
       this.state === CircuitState.CLOSED &&
       this.failureCount >= this.config.failureThreshold
@@ -115,22 +117,29 @@ class CircuitBreaker {
         name: this.name,
         threshold: this.config.failureThreshold,
       });
-      this.open();
+      this.open(`${this.failureCount} consecutive request failures`);
     }
   }
 
   /**
-   * Force the circuit open (e.g., quota exceeded)
+   * Force the circuit open (e.g., quota exceeded).
+   *
+   * `reason` is not decoration. The breaker opens two ways that mean opposite things - a real daily
+   * quota exhaustion, or `failureThreshold` unrelated failures - and once it is open every refusal
+   * looks identical. Without the reason recorded here, the only honest thing a caller can say is
+   * "blocked", and the tempting thing to say is "quota exceeded", which is wrong half the time.
    */
-  open(): void {
+  open(reason: string): void {
     this.state = CircuitState.OPEN;
     this.nextAttemptTime = Date.now() + this.config.resetTimeout;
+    this.openReason = reason;
     this.failureCount = 0;
     this.successCount = 0;
 
     const resetDate = new Date(this.nextAttemptTime);
     Logger.warn(`Circuit breaker OPEN`, {
       name: this.name,
+      reason,
       resetTime: resetDate.toISOString(),
       resetInMinutes: Math.round(this.config.resetTimeout / 60000),
     });
@@ -144,6 +153,7 @@ class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.nextAttemptTime = 0;
+    this.openReason = '';
 
     Logger.info(`Circuit breaker CLOSED`, {
       name: this.name,
@@ -153,11 +163,17 @@ class CircuitBreaker {
   /**
    * Get current state information
    */
-  getState(): { state: CircuitState; nextAttemptTime: number; failureCount: number } {
+  getState(): {
+    state: CircuitState;
+    nextAttemptTime: number;
+    failureCount: number;
+    openReason: string;
+  } {
     return {
       state: this.state,
       nextAttemptTime: this.nextAttemptTime,
       failureCount: this.failureCount,
+      openReason: this.openReason,
     };
   }
 

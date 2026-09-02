@@ -15,7 +15,7 @@ describe('Circuit Breaker Integration', () => {
   describe('Circuit Breaker State Management', () => {
     it('should maintain circuit state across multiple calls', () => {
       // Open the circuit
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
 
       // Should stay open for multiple checks
@@ -25,7 +25,7 @@ describe('Circuit Breaker Integration', () => {
     });
 
     it('should allow closing circuit after it was opened', () => {
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
 
       youtubeCircuitBreaker.close();
@@ -59,14 +59,14 @@ describe('Circuit Breaker Integration', () => {
     it('should immediately open on quota error', () => {
       expect(youtubeCircuitBreaker.isOpen()).toBe(false);
 
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
       expect(youtubeCircuitBreaker.canProceed()).toBe(false);
     });
 
     it('should maintain open state for configured duration', () => {
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       const state = youtubeCircuitBreaker.getState();
 
       expect(state.state).toBe('OPEN');
@@ -76,7 +76,7 @@ describe('Circuit Breaker Integration', () => {
     // The token-clearing that follows from this is asserted where it happens, against the real
     // validator: see tests/unit/authValidationQuota.test.ts.
     it('refuses further calls once the breaker opens', () => {
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
       expect(youtubeCircuitBreaker.canProceed()).toBe(false);
@@ -86,7 +86,7 @@ describe('Circuit Breaker Integration', () => {
   describe('Integration with Application Routes', () => {
     it('should be shared across the application', async () => {
       // The circuit breaker is a singleton that maintains state
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       // Import it again to verify it's the same instance
       const { youtubeCircuitBreaker: secondRef } = await import('../../src/lib/circuitBreaker');
