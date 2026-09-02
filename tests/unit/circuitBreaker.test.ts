@@ -152,7 +152,7 @@ describe('CircuitBreaker', () => {
     it('should force open when open() is called', () => {
       expect(circuitBreaker.getState().state).toBe(CircuitState.CLOSED);
 
-      circuitBreaker.open();
+      circuitBreaker.open('quota exhausted');
 
       expect(circuitBreaker.getState().state).toBe(CircuitState.OPEN);
       expect(circuitBreaker.isOpen()).toBe(true);
@@ -175,14 +175,14 @@ describe('CircuitBreaker', () => {
 
   describe('Quota Error Scenario', () => {
     it('should immediately open on quota error', () => {
-      circuitBreaker.open();
+      circuitBreaker.open('quota exhausted');
 
       expect(circuitBreaker.isOpen()).toBe(true);
       expect(circuitBreaker.canProceed()).toBe(false);
     });
 
     it('should prevent further requests until timeout', () => {
-      circuitBreaker.open();
+      circuitBreaker.open('quota exhausted');
 
       // Multiple calls should all be rejected
       expect(circuitBreaker.canProceed()).toBe(false);
@@ -191,7 +191,7 @@ describe('CircuitBreaker', () => {
     });
 
     it('should allow retry after timeout period', async () => {
-      circuitBreaker.open();
+      circuitBreaker.open('quota exhausted');
       expect(circuitBreaker.canProceed()).toBe(false);
 
       // Wait for timeout
@@ -224,7 +224,7 @@ describe('CircuitBreaker', () => {
       });
 
       // Open and wait for HALF_OPEN
-      customBreaker.open();
+      customBreaker.open('quota exhausted');
       vi.advanceTimersByTime(101);
       customBreaker.canProceed();
 
@@ -255,7 +255,7 @@ describe('CircuitBreaker', () => {
 
     // >= not >: at the exact reset instant the breaker may probe again, it does not wait a tick more.
     it('transitions to HALF_OPEN at exactly the reset time', () => {
-      cb.open();
+      cb.open('quota exhausted');
       vi.advanceTimersByTime(60_000); // now === nextAttemptTime
 
       expect(cb.canProceed()).toBe(true);
@@ -264,7 +264,7 @@ describe('CircuitBreaker', () => {
 
     // recordSuccess only counts toward closing in HALF_OPEN - a success while OPEN must not close it.
     it('does not count successes toward closing while OPEN', () => {
-      cb.open();
+      cb.open('quota exhausted');
 
       cb.recordSuccess();
       cb.recordSuccess();
@@ -274,7 +274,7 @@ describe('CircuitBreaker', () => {
 
     // The threshold-open only fires from CLOSED; failures while already OPEN must not re-arm the timer.
     it('does not re-arm the reset timer on failures while already OPEN', () => {
-      cb.open();
+      cb.open('quota exhausted');
       const armed = cb.getState().nextAttemptTime;
       vi.advanceTimersByTime(10_000);
 
@@ -287,7 +287,7 @@ describe('CircuitBreaker', () => {
     // isOpen is `state===OPEN && now < nextAttemptTime`: past the window it is NOT open (the || and
     // the &&-true mutants would keep it open).
     it('is not open once an OPEN breaker is past its reset window', () => {
-      cb.open();
+      cb.open('quota exhausted');
       vi.advanceTimersByTime(60_001);
 
       expect(cb.isOpen()).toBe(false);
@@ -296,7 +296,7 @@ describe('CircuitBreaker', () => {
     // The window is exclusive at the top: AT nextAttemptTime it is already not open (the <= mutant
     // would keep it open one instant too long).
     it('is not open at the exact reset instant', () => {
-      cb.open();
+      cb.open('quota exhausted');
       vi.advanceTimersByTime(60_000);
 
       expect(cb.isOpen()).toBe(false);
@@ -305,7 +305,7 @@ describe('CircuitBreaker', () => {
     it('logs the reset window in whole minutes when opening', () => {
       const warn = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
 
-      cb.open(); // resetTimeout 60_000ms -> 1 minute
+      cb.open('quota exhausted'); // resetTimeout 60_000ms -> 1 minute
 
       expect(warn).toHaveBeenCalledWith(
         'Circuit breaker OPEN',
@@ -314,7 +314,7 @@ describe('CircuitBreaker', () => {
     });
 
     it('logs Unknown error for a non-Error failure in HALF_OPEN', () => {
-      cb.open();
+      cb.open('quota exhausted');
       vi.advanceTimersByTime(60_001);
       cb.canProceed(); // -> HALF_OPEN
       const warn = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);

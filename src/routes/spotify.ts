@@ -8,6 +8,7 @@ import { validate, schemas, ValidatedRequest } from '../lib/validation';
 import { formatRetryAfter } from '../lib/errorFormatter';
 import { CacheDuration, setCache } from '../lib/cache';
 import { youtubeCircuitBreaker } from '../lib/circuitBreaker';
+import { describeRetryWait, youtubeWritesBlocked } from '../youtube/writes';
 import {
   parseSpotifyTokenCookie,
   parseYouTubeTokenCookie,
@@ -226,7 +227,7 @@ router.get(
                 errorCode,
               });
               // Open circuit breaker for quota errors
-              youtubeCircuitBreaker.open();
+              youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
               // Clear YouTube tokens
               res.clearCookie('youtube_tokens');
               // This list is loaded via htmx, so a 302 would be swapped into the
@@ -403,6 +404,20 @@ router.get(
         },
       );
       return res.status(401).send(html);
+    }
+
+    // A sync is nothing but YouTube writes, so while they are refused the button can only produce
+    // an error. Offering it anyway is how a limit reads as the app being broken.
+    const blocked = youtubeWritesBlocked();
+    if (blocked) {
+      const html = await ejs.renderFile(
+        path.join(__dirname, '../../views/partials/sync-button-disabled.ejs'),
+        {
+          message: 'YouTube unavailable',
+          title: `Syncing is paused because ${blocked.reason}. Try again ${describeRetryWait(blocked.retryAt)}.`,
+        },
+      );
+      return res.status(503).send(html);
     }
 
     if (!youtubeTokens) {

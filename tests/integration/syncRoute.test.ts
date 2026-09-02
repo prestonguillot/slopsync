@@ -217,9 +217,14 @@ describe('GET /api/sync/playlist/:id/stream', () => {
     const res = await stream();
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('YouTube Quota Exceeded');
-    // The body tells the user WHY they are blocked.
-    expect(res.text).toContain('quota has been exceeded');
+    expect(res.text).toContain('YouTube is not accepting changes');
+    // The body names the actual reason, and says when it lifts. It used to assert the daily quota
+    // for every limit, including a breaker opened by unrelated failures.
+    expect(res.text).toContain('the daily YouTube API quota is exhausted');
+    expect(res.text).toContain('midnight Pacific');
+    // The marker the page turns into the event that disables the sync and edit controls. The SSE
+    // headers are long gone by here, so the HX-Trigger the other routes use is not available.
+    expect(res.text).toContain('data-youtube-blocked');
   });
 
   it('a non-quota failure streams the generic error, not the quota partial', async () => {

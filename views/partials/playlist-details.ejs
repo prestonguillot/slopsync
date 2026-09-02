@@ -1,3 +1,10 @@
+<%# youtubeBlocked is optional: the showcase renders this partial too, and EJS throws on a bare
+    reference to a local a caller did not pass, which would take the whole page with it. %>
+<%
+  const blockedInfo = typeof youtubeBlocked !== 'undefined' ? youtubeBlocked : null;
+  const blocked = !!blockedInfo;
+  const blockedTitle = blocked ? `Paused: ${blockedInfo.reason}` : '';
+-%>
 <div class="playlist-details" data-playlist-id="<%= playlistId %>"
      data-track-count="<%= totalTracks %>"
      <%# The collapsed row's "x of y synced" is decorated from this: the row's own
@@ -20,6 +27,15 @@
         Refresh
       </button>
     </div>
+    <%# Said once at the top rather than only as a tooltip on each disabled stamp: a row of greyed
+        controls with no explanation reads as the app being broken. %>
+    <% if (blocked) { %>
+      <div class="resync-notice" role="status">
+        <span class="resync-notice__dot" aria-hidden="true"></span>
+        Editing is paused &mdash; <%= blockedInfo.reason %>. Linking and syncing will work again
+        once YouTube is accepting changes.
+      </div>
+    <% } %>
     <% if (hasYoutubeConnection && hasYoutubePlaylist && needsResync) { %>
       <div class="resync-notice" role="status">
         <span class="resync-notice__dot" aria-hidden="true"></span>
@@ -100,10 +116,11 @@
             <% if (track.linked && track.spotify) { %>
               <span class="badge bg-success">Linked</span>
               <button type="button" class="btn btn-outline-secondary btn-sm"
+                      <% if (blocked) { %>disabled title="<%= blockedTitle %>"<% } else { %>
                       hx-get="/api/playlistDetails/search/<%= track.spotify.id %>?trackName=<%= encodeURIComponent(track.spotify.name) %>&artistName=<%= encodeURIComponent(track.spotify.artist) %>&playlistId=<%= playlistId %>&currentVideoId=<%= track.youtube?.id || '' %>"
                       hx-target="#video-modal-content"
                       hx-swap="innerHTML"
-                      title="Edit linked video">
+                      title="Edit linked video"<% } %>>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
                 </svg>
@@ -111,10 +128,11 @@
             <% } else if (track.spotify) { %>
               <span class="badge bg-warning">Unlinked</span>
               <button type="button" class="btn btn-outline-secondary btn-sm"
+                      <% if (blocked) { %>disabled title="<%= blockedTitle %>"<% } else { %>
                       hx-get="/api/playlistDetails/search/<%= track.spotify.id %>?trackName=<%= encodeURIComponent(track.spotify.name) %>&artistName=<%= encodeURIComponent(track.spotify.artist) %>&playlistId=<%= playlistId %>&currentVideoId="
                       hx-target="#video-modal-content"
                       hx-swap="innerHTML"
-                      title="Link video to this track">
+                      title="Link video to this track"<% } %>>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                 </svg>

@@ -51,7 +51,7 @@ describe('Spotify Circuit Breaker', () => {
     });
 
     it('should return false when circuit breaker is open', async () => {
-      spotifyCircuitBreaker.open();
+      spotifyCircuitBreaker.open('Spotify reported its quota exhausted');
 
       const result = await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
@@ -162,7 +162,7 @@ describe('Spotify Circuit Breaker', () => {
 
   describe('Token Management', () => {
     it('should clear cookies when circuit opens on rate limit', async () => {
-      spotifyCircuitBreaker.open();
+      spotifyCircuitBreaker.open('Spotify reported its quota exhausted');
 
       await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
@@ -170,7 +170,7 @@ describe('Spotify Circuit Breaker', () => {
     });
 
     it('should provide user-friendly error message on circuit breaker open', async () => {
-      spotifyCircuitBreaker.open();
+      spotifyCircuitBreaker.open('Spotify reported its quota exhausted');
 
       const result = await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
