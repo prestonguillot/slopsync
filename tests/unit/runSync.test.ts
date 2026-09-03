@@ -45,6 +45,7 @@ vi.mock('@/lib/delay', () => ({ sleep: h.sleep }));
 import { runSync, SyncDeps } from '@/sync/runSync';
 import type { TrackSearchResult } from '@/sync/videoSearch';
 import type { ProgressUpdate } from '@/types/progress';
+import { InMemoryLeaseStore, type Lease, type LeaseStore } from '@/lib/leases';
 
 const PLAYLIST_ID = '37i9dQZF1DXcBWIGoYBM5M';
 
@@ -567,5 +568,147 @@ describe('the progress it streams', () => {
         percentage: 100,
       },
     ]);
+  });
+});
+
+/**
+ * Two syncs of one playlist.
+ *
+ * Nothing here reaches for a lease key by name: what matters is that a second sync of the same
+ * playlist is refused while the first is running, and allowed once it is not. Asserting the key
+ * string would pass just as happily if the two syncs were locking different things.
+ */
+describe('two syncs of the same playlist', () => {
+  let leases: InMemoryLeaseStore;
+
+  beforeEach(() => {
+    leases = new InMemoryLeaseStore();
+  });
+
+  const existingPlaylist = () =>
+    h.findSyncedYoutubePlaylist.mockResolvedValue({ id: 'EXISTING_PL' });
+
+  it('refuses the second while the first still holds the playlist', async () => {
+    existingPlaylist();
+    let finishFirst!: () => void;
+    h.reconcilePlaylist.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishFirst = () => resolve({ inserted: 0, moved: 0, deleted: 0 });
+        }),
+    );
+
+    const first = run({ leases });
+    await vi.waitFor(() => expect(h.reconcilePlaylist).toHaveBeenCalled());
+
+    await run({ leases });
+
+    expect(emitted.at(-1)).toContain('already syncing');
+    expect(h.reconcilePlaylist).toHaveBeenCalledTimes(1);
+
+    finishFirst();
+    await first;
+  });
+
+  it('lets the next sync through once the first has finished', async () => {
+    existingPlaylist();
+
+    await run({ leases });
+    await run({ leases });
+
+    expect(h.reconcilePlaylist).toHaveBeenCalledTimes(2);
+    expect(emitted.at(-1)).not.toContain('already syncing');
+  });
+
+  // A sync that throws still has to give the playlist up, or one failure locks it out for the TTL.
+  it('gives the playlist up when the sync throws', async () => {
+    existingPlaylist();
+    h.reconcilePlaylist.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(run({ leases })).rejects.toThrow('boom');
+    await run({ leases });
+
+    expect(h.reconcilePlaylist).toHaveBeenCalledTimes(2);
+    expect(emitted.at(-1)).not.toContain('already syncing');
+  });
+
+  // Progress is what renews the lease, so a sync that outlives its TTL while working keeps the
+  // playlist, and one that stops working stops renewing.
+  it('renews the lease as it reports progress', async () => {
+    existingPlaylist();
+    const touch = vi.fn().mockResolvedValue(true);
+    const watched: LeaseStore = {
+      acquire: async (key, ttlMs) => {
+        const real = await leases.acquire(key, ttlMs);
+        return real && ({ ...real, touch } as Lease);
+      },
+    };
+
+    await run({ leases: watched });
+
+    expect(touch.mock.calls.length).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * The first sync of a playlist, where there is no id to lock on because the playlist does not
+ * exist yet - which is exactly when two runs would create one copy each.
+ */
+describe('two first-time syncs racing to create the playlist', () => {
+  let leases: InMemoryLeaseStore;
+
+  beforeEach(() => {
+    leases = new InMemoryLeaseStore();
+  });
+
+  /**
+   * The check inside the guard is a second call, and it is the one that matters: the first answer
+   * was taken before the search phase. Guarding only the insert would leave both runs acting on
+   * their own stale "it does not exist" and creating a playlist each.
+   */
+  it('stops before writing when another sync created the playlist first', async () => {
+    h.findSyncedYoutubePlaylist
+      .mockResolvedValueOnce(null) // before the search: nothing there
+      .mockResolvedValueOnce({ id: 'RACED_PL' }); // inside the guard: someone else got there
+
+    await run({ leases });
+
+    expect(youtube.playlists.insert).not.toHaveBeenCalled();
+    expect(h.reconcilePlaylist).not.toHaveBeenCalled();
+    expect(emitted.at(-1)).toContain('Another sync got here first');
+  });
+
+  it('creates it when the second check agrees it is still missing', async () => {
+    h.findSyncedYoutubePlaylist.mockResolvedValue(null);
+
+    await run({ leases });
+
+    expect(youtube.playlists.insert).toHaveBeenCalledTimes(1);
+    expect(h.reconcilePlaylist).toHaveBeenCalled();
+  });
+
+  // The created playlist is held for the rest of the sync, the same as one that already existed.
+  it('holds the playlist it just created', async () => {
+    h.findSyncedYoutubePlaylist.mockResolvedValue(null);
+    await run({ leases });
+
+    // NEW_PL is what the fake insert returns; a second sync of it must now be refused.
+    h.findSyncedYoutubePlaylist.mockResolvedValue({ id: 'NEW_PL' });
+    let finishSecond!: () => void;
+    h.reconcilePlaylist.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSecond = () => resolve({ inserted: 0, moved: 0, deleted: 0 });
+        }),
+    );
+    const second = run({ leases });
+    await vi.waitFor(() => expect(h.reconcilePlaylist).toHaveBeenCalledTimes(2));
+
+    await run({ leases });
+
+    expect(emitted.at(-1)).toContain('already syncing');
+
+    finishSecond();
+    await second;
   });
 });
