@@ -23,14 +23,6 @@ const router = Router();
 
 type YoutubeClient = Awaited<ReturnType<typeof ensureValidYouTubeToken>>['client'];
 
-// Helper function to get YouTube user ID from cached channel ID in tokens
-function getYouTubeUserId(youtubeTokens: YouTubeTokens): string {
-  if (!youtubeTokens.channel_id) {
-    throw new Error('YouTube channel ID not found in tokens - re-authenticate with YouTube');
-  }
-  return youtubeTokens.channel_id;
-}
-
 // POST returns the SSE subscriber fragment (CSRF-protected); it does no work.
 // The subscriber connects to the stream below, which runs the sync.
 router.post(
@@ -93,7 +85,6 @@ router.get(
       const yt = await ensureValidYouTubeToken(req as Request, res);
       youtube = yt.client;
       initialQuotaUsed = yt.quotaUsed;
-      getYouTubeUserId(youtubeTokens); // validates channel id is present
     } catch (error) {
       const expired = authExpired(error);
       if (expired) {
@@ -173,9 +164,13 @@ router.get(
           youtubeBlocked: true,
           title: 'YouTube is not accepting changes',
           message: `The sync stopped because ${reason}.`,
+          // The retry time already accounts for what actually happened - a daily quota reports the
+          // midnight Pacific reset, a run of unrelated failures reports the breaker's probe window.
+          // Naming the quota reset on top of that asserted a cause for every refusal, which is the
+          // same wrong claim in the details that the title used to make.
           details: blocked
-            ? `Syncing is paused until this clears - try again ${describeRetryWait(blocked.retryAt)}. A daily quota resets at midnight Pacific.`
-            : 'Try again shortly. A daily quota resets at midnight Pacific.',
+            ? `Syncing is paused until this clears - try again ${describeRetryWait(blocked.retryAt)}.`
+            : 'Try again shortly.',
         });
       } else {
         html = await renderPartial('sync-error.ejs', {

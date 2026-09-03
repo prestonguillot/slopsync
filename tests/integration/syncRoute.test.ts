@@ -221,10 +221,36 @@ describe('GET /api/sync/playlist/:id/stream', () => {
     // The body names the actual reason, and says when it lifts. It used to assert the daily quota
     // for every limit, including a breaker opened by unrelated failures.
     expect(res.text).toContain('the daily YouTube API quota is exhausted');
-    expect(res.text).toContain('midnight Pacific');
+    // When it lifts, taken from what the breaker recorded. It used to append "a daily quota resets
+    // at midnight Pacific" to every refusal, asserting that cause even for a breaker opened by
+    // unrelated failures - the same wrong claim in the details that the title had already lost.
+    expect(res.text).toMatch(/try again in about .+\./);
+    expect(res.text).not.toContain('midnight Pacific');
     // The marker the page turns into the event that disables the sync and edit controls. The SSE
     // headers are long gone by here, so the HX-Trigger the other routes use is not available.
     expect(res.text).toContain('data-youtube-blocked');
+  });
+
+  /**
+   * A rate limit is a refusal on limits, so it takes the same branch as quota - but it does NOT
+   * open the breaker, because it passes in seconds rather than lasting the day. With nothing open
+   * there is no recorded retry time, and the message has to fall back to saying so vaguely instead
+   * of inventing a number.
+   */
+  it('a rate limit refuses without a retry time, since nothing is open to have recorded one', async () => {
+    h.fetchAllPlaylistItems.mockResolvedValue([track('t1', 'Song One')]);
+    h.playlistsList.mockResolvedValue({ data: { items: [] } }); // create mode
+    h.searchMusicVideo.mockResolvedValue('v1');
+    h.playlistsInsert.mockRejectedValue(
+      new YoutubeApiError('YouTube API error (403): rate limit', 403, 'rateLimitExceeded'),
+    );
+
+    const res = await stream();
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('YouTube is not accepting changes');
+    expect(res.text).toContain('Try again shortly.');
+    expect(res.text).not.toMatch(/try again in about/);
   });
 
   it('a non-quota failure streams the generic error, not the quota partial', async () => {
@@ -288,11 +314,12 @@ describe('GET /api/sync/playlist/:id/stream', () => {
   });
 
   /**
-   * A YouTube cookie from before the channel id was cached has no channel_id. The sync needs it (to
-   * name the user's own playlists), so a token without it is not usable - the route stops at a 500
-   * "Authentication Error" before opening the stream rather than syncing against an unknown account.
+   * The sync used to demand a cached channel id and refuse the whole run without one. Nothing ever
+   * read it - the call site discarded the return value, so it was a presence check on a field with
+   * no reader, bought with a quota unit at connect time. Its only real effect was that a connect
+   * made while the quota was gone produced a cookie the sync would then reject.
    */
-  it('refuses a YouTube token that carries no channel id', async () => {
+  it('syncs a YouTube token that carries no channel id', async () => {
     const noChannel = JSON.stringify({
       access_token: 'a',
       refresh_token: 'b',
@@ -305,10 +332,8 @@ describe('GET /api/sync/playlist/:id/stream', () => {
       `youtube_tokens=${noChannel}`,
     ]);
 
-    expect(res.status).toBe(500);
-    expect(res.text).toContain('Authentication Error');
-    // It stopped before the stream: no sync work happened.
-    expect(h.reconcilePlaylist).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.text).not.toContain('Authentication Error');
   });
 });
 

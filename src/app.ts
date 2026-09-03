@@ -164,6 +164,7 @@ export function createApp() {
     res.render('partials/connection-button', {
       service: 'spotify',
       connected: spotifyResult.connected,
+      unavailable: !!spotifyResult.unavailable,
       error: spotifyResult.error,
       loading: false,
     });
@@ -183,6 +184,7 @@ export function createApp() {
     res.render('partials/connection-button', {
       service: 'youtube',
       connected: youtubeResult.connected,
+      unavailable: !!youtubeResult.unavailable,
       error: youtubeResult.error,
       loading: false,
     });

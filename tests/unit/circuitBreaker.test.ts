@@ -328,3 +328,79 @@ describe('CircuitBreaker', () => {
     });
   });
 });
+
+/**
+ * What the breaker records about its own state, which is what every downstream message is built
+ * from. A refusal that cannot say why it is refusing, or when it stops, is the "please try again
+ * later" that sends people back every fifteen minutes all night.
+ */
+describe('what it records about being open', () => {
+  let cb: CircuitBreaker;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    cb = new CircuitBreaker('Recorder', {
+      failureThreshold: 2,
+      resetTimeout: 60_000,
+      successThreshold: 2,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('starts with nothing recorded, so a stale reason cannot leak into a message', () => {
+    const state = cb.getState();
+
+    expect(state.openReason).toBe('');
+    expect(state.openClearsAt).toBeNull();
+  });
+
+  // Opened by a run of failures, not by a caller who knew a cause - so the reason has to say that,
+  // rather than the "quota exceeded" every refusal used to claim.
+  it('names the failure count when the threshold opens it', () => {
+    cb.recordFailure();
+    cb.recordFailure();
+
+    expect(cb.getState().openReason).toBe('2 consecutive request failures');
+  });
+
+  it('says a probe failed when reopening from HALF_OPEN', () => {
+    cb.open('quota exhausted');
+    vi.advanceTimersByTime(60_001);
+    cb.canProceed(); // -> HALF_OPEN
+
+    cb.recordFailure(new Error('still broken'));
+
+    expect(cb.getState().openReason).toContain('a probe request failed while recovering');
+  });
+
+  /**
+   * The log carries the clear time explicitly as null when there isn't one. Leaving the key off
+   * entirely reads the same as a breaker that was never given one and one whose caller forgot.
+   */
+  it('logs a null clear time when the caller did not know one', () => {
+    const warn = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
+
+    cb.open('2 consecutive request failures');
+
+    expect(warn).toHaveBeenCalledWith(
+      'Circuit breaker OPEN',
+      expect.objectContaining({ clearsAt: null }),
+    );
+  });
+
+  it('logs the clear time when there is one', () => {
+    const warn = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
+    const clearsAt = new Date('2026-09-03T07:00:00.000Z');
+
+    cb.open('the daily YouTube API quota is exhausted', clearsAt);
+
+    expect(warn).toHaveBeenCalledWith(
+      'Circuit breaker OPEN',
+      expect.objectContaining({ clearsAt: '2026-09-03T07:00:00.000Z' }),
+    );
+  });
+});
