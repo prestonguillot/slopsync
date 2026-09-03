@@ -31,6 +31,8 @@ class CircuitBreaker {
   private successCount: number = 0;
   private nextAttemptTime: number = 0;
   private openReason: string = '';
+  /** When the cause lifts, for callers that know it. Null means only the probe window is known. */
+  private openClearsAt: Date | null = null;
   private config: CircuitBreakerConfig;
   private name: string;
 
@@ -128,11 +130,18 @@ class CircuitBreaker {
    * quota exhaustion, or `failureThreshold` unrelated failures - and once it is open every refusal
    * looks identical. Without the reason recorded here, the only honest thing a caller can say is
    * "blocked", and the tempting thing to say is "quota exceeded", which is wrong half the time.
+   *
+   * `clearsAt` is when the CAUSE lifts, which is not `nextAttemptTime`. That is when to probe again
+   * in case this was a blip, and is the right schedule for the breaker and the wrong number for a
+   * person: a daily quota is still gone when a fifteen-minute window elapses, so showing it tells
+   * someone to come back four times an hour, all night. Callers that know better say so; the rest
+   * leave it null and the probe window is the best answer available.
    */
-  open(reason: string): void {
+  open(reason: string, clearsAt: Date | null = null): void {
     this.state = CircuitState.OPEN;
     this.nextAttemptTime = Date.now() + this.config.resetTimeout;
     this.openReason = reason;
+    this.openClearsAt = clearsAt;
     this.failureCount = 0;
     this.successCount = 0;
 
@@ -142,6 +151,7 @@ class CircuitBreaker {
       reason,
       resetTime: resetDate.toISOString(),
       resetInMinutes: Math.round(this.config.resetTimeout / 60000),
+      clearsAt: clearsAt?.toISOString() ?? null,
     });
   }
 
@@ -154,6 +164,7 @@ class CircuitBreaker {
     this.successCount = 0;
     this.nextAttemptTime = 0;
     this.openReason = '';
+    this.openClearsAt = null;
 
     Logger.info(`Circuit breaker CLOSED`, {
       name: this.name,
@@ -168,12 +179,14 @@ class CircuitBreaker {
     nextAttemptTime: number;
     failureCount: number;
     openReason: string;
+    openClearsAt: Date | null;
   } {
     return {
       state: this.state,
       nextAttemptTime: this.nextAttemptTime,
       failureCount: this.failureCount,
       openReason: this.openReason,
+      openClearsAt: this.openClearsAt,
     };
   }
 
