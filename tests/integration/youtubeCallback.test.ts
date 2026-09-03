@@ -5,8 +5,10 @@
  * which is the client's cue to refetch the playlist list past the cache - the copy the browser
  * holds was fetched before the connect and shows every playlist as unsynced.
  *
- * The channel id is read here and cached in the cookie so that later requests do not have to spend
- * a quota unit rediscovering it.
+ * The invariant these hold shut is that connecting spends no quota. `channelsList` stays mocked
+ * for exactly that: it is asserted never to be called, and made to fail in the way a spent quota
+ * fails, so a connect that reaches for the API again is caught here rather than on the one day of
+ * the month the quota is actually gone.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -63,13 +65,13 @@ describe('a successful YouTube connect', () => {
     expect(cookie).toContain('HttpOnly');
   });
 
-  it('caches the channel id in the cookie', async () => {
+  it('stores the exchanged tokens', async () => {
     const response = await callback();
 
     const cookie = findSetCookie(response, 'youtube_tokens')!;
     const value = JSON.parse(decodeURIComponent(cookie.split(';')[0]!.split('=')[1]!));
-    expect(value.channel_id).toBe('UC-channel-id');
     expect(value.access_token).toBe('yt-access');
+    expect(value.refresh_token).toBe('yt-refresh');
   });
 
   it('exchanges the code it was given', async () => {
@@ -78,10 +80,11 @@ describe('a successful YouTube connect', () => {
     expect(h.exchangeYoutubeCode).toHaveBeenCalledWith(CODE);
   });
 
-  it('asks only for the channel id, one channel', async () => {
+  // Authenticating costs no quota, so the connect must not call the API at all.
+  it('calls no YouTube API', async () => {
     await callback();
 
-    expect(h.channelsList).toHaveBeenCalledWith({ part: ['id'], mine: true, maxResults: 1 });
+    expect(h.channelsList).not.toHaveBeenCalled();
   });
 });
 
@@ -129,36 +132,71 @@ describe('when the connect fails', () => {
     expect(response.headers['location']).toBe('/?error=youtube&reason=failed');
   });
 
-  it('reports quota when YouTube says the budget is gone', async () => {
-    const { YoutubeApiError } = await import('@/youtube/client');
-    h.channelsList.mockRejectedValue(new YoutubeApiError('quota', 403, 'quotaExceeded'));
-
-    const response = await callback();
-
-    expect(response.headers['location']).toBe('/?error=youtube&reason=quota_exceeded');
-  });
-
-  // Without a channel id the app cannot tell which account it is talking to, so a connect that
-  // cannot produce one is not a connect. Each of these is a shape YouTube can actually return, and
-  // none of them may throw on the way to saying so.
-  it.each([
-    ['an empty channel list', { data: { items: [] } }],
-    ['no items key at all', { data: {} }],
-    ['a channel with no id', { data: { items: [{}] } }],
-  ])('refuses the connect on %s', async (_label, response) => {
-    h.channelsList.mockResolvedValue(response);
-
-    const result = await callback();
-
-    expect(result.headers['location']).toBe('/?error=youtube&reason=failed');
-    expect(findSetCookie(result, 'youtube_tokens')).toBeUndefined();
-  });
-
   it('stores nothing when the exchange fails', async () => {
     h.exchangeYoutubeCode.mockRejectedValue(new Error('invalid_grant'));
 
     const response = await callback();
 
     expect(findSetCookie(response, 'youtube_tokens')).toBeUndefined();
+  });
+});
+
+/**
+ * The failure this replaced: the connect fetched a channel id, an exhausted quota failed that
+ * call, and the whole connect was abandoned before the cookie was ever written. Combined with the
+ * validator clearing tokens on the same 403, running out of quota logged you out and then refused
+ * every attempt to log back in, because reconnecting needed the quota that was gone.
+ */
+describe('connecting while the daily quota is exhausted', () => {
+  beforeEach(async () => {
+    const { YoutubeApiError } = await import('@/youtube/client');
+    h.channelsList.mockRejectedValue(new YoutubeApiError('quota', 403, 'quotaExceeded'));
+  });
+
+  it('connects anyway', async () => {
+    const response = await callback();
+
+    expect(response.headers['location']).toBe('/?connected=youtube');
+  });
+
+  it('stores the tokens anyway', async () => {
+    const response = await callback();
+
+    expect(findSetCookie(response, 'youtube_tokens')).toBeDefined();
+  });
+});
+
+/**
+ * What the callback writes to the log. These are the lines someone reads when a connect failed and
+ * the browser only said "something went wrong" - so which service rejected the state, and whether
+ * a code arrived at all, have to be in them.
+ */
+describe('what the callback records', () => {
+  it('names YouTube when it rejects a mismatched state', async () => {
+    const { Logger } = await import('@/lib/logger');
+    const warn = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
+
+    await request(app)
+      .get('/auth/youtube/callback')
+      .set('Cookie', 'youtube_oauth_state=some-other-state')
+      .query({ code: CODE, state: STATE });
+
+    expect(warn).toHaveBeenCalledWith(
+      'YouTube callback rejected - OAuth state mismatch',
+      expect.anything(),
+    );
+  });
+
+  // Distinguishes "the user never got back from Google" from "they did, and it failed here".
+  it('records whether an authorization code arrived', async () => {
+    const { Logger } = await import('@/lib/logger');
+    const requestStart = vi.spyOn(Logger, 'requestStart').mockImplementation(() => undefined);
+
+    await callback();
+
+    expect(requestStart).toHaveBeenCalledWith(
+      'YouTube Callback Request',
+      expect.objectContaining({ authCodePresent: true }),
+    );
   });
 });

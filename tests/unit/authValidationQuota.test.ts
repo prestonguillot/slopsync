@@ -3,6 +3,7 @@ import { validateYouTubeConnection } from '../../src/auth/authValidation';
 import { youtubeCircuitBreaker } from '../../src/lib/circuitBreaker';
 import { YouTubeTokens } from '../../src/types/oauth';
 import { YoutubeApiError } from '../../src/youtube/client';
+import { Logger } from '../../src/lib/logger';
 
 /**
  * Exactly what src/youtube/client.ts throws for a non-ok response. A plain literal ({ code: 401 })
@@ -57,15 +58,30 @@ describe('YouTube Auth Validation - Quota Handling', () => {
     vi.clearAllMocks();
   });
 
-  describe('Circuit Breaker Token Clearing', () => {
-    it('should return false when circuit breaker is open', async () => {
-      // Open circuit breaker
+  /**
+   * A rationing service is not a credential problem. Clearing the cookie here is what turned a
+   * temporary limit into a lockout: the user was shown as disconnected and sent to reconnect,
+   * down a path that needed the very API that was refusing - so the quota logged them out and
+   * then refused to let them back in until it reset.
+   */
+  describe('Circuit Breaker Token Handling', () => {
+    it('reports unavailable rather than disconnected when the breaker is open', async () => {
       youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('youtube_tokens');
+      expect(result.unavailable).toBe(true);
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
+    });
+
+    it('says when to come back', async () => {
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
+
+      const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
+
+      expect(result.retryAt).toBeInstanceOf(Date);
+      expect(result.retryAt!.getTime()).toBeGreaterThan(Date.now());
     });
 
     it('should not clear tokens when circuit breaker is closed', async () => {
@@ -90,16 +106,16 @@ describe('YouTube Auth Validation - Quota Handling', () => {
   });
 
   describe('Quota Error Detection', () => {
-    it('should clear tokens on 403 quota error', async () => {
-      // Mock YouTube API to throw 403 error
+    // The tokens are still good - only the quota is gone - so they are kept, and the breaker is
+    // opened so nothing keeps calling an API that has already said no.
+    it('keeps tokens on a 403 quota error and opens the breaker', async () => {
       yt.channelsList.mockRejectedValue(apiError(403, 'Quota exceeded', 'quotaExceeded'));
 
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      // Should clear cookies on quota error
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('youtube_tokens');
-      // Should open circuit breaker
+      expect(result.unavailable).toBe(true);
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
     });
   });
@@ -170,18 +186,19 @@ describe('YouTube Auth Validation - Quota Handling', () => {
   });
 
   describe('User Experience Flow', () => {
-    it('should transition from connected to disconnected on quota exceeded', async () => {
+    it('should transition from connected to unavailable on quota exceeded', async () => {
       // Start in connected state (circuit closed)
       expect(youtubeCircuitBreaker.isOpen()).toBe(false);
 
       // Simulate quota exceeded
       youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
-      // Attempt validation - should fail and clear tokens
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('youtube_tokens');
+      expect(result.unavailable).toBe(true);
+      // The credentials survive the outage, so there is something to reconnect with afterwards.
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
     });
 
@@ -211,9 +228,9 @@ describe('YouTube Auth Validation - Quota Handling', () => {
       expect(result2.connected).toBe(false);
       expect(result3.connected).toBe(false);
 
-      // Should have cleared cookies each time
-      expect(mockResponse.clearCookie).toHaveBeenCalledTimes(3);
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('youtube_tokens');
+      // Every page load runs this. Clearing on each one is how a fifteen-minute breaker window
+      // became a permanent signed-out state that no amount of reconnecting could fix.
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
     });
 
     it('should allow validation when circuit is closed', () => {
@@ -225,23 +242,29 @@ describe('YouTube Auth Validation - Quota Handling', () => {
   });
 
   describe('Error Message Feedback', () => {
-    it('should return quota exceeded error message when circuit breaker is open', async () => {
+    /**
+     * "Please try again later" names no time, and the breaker's own window would name the wrong
+     * one: it reopens every fifteen minutes, while the daily quota is gone until midnight Pacific.
+     * The wait is asserted loosely because it depends on the hour the test runs.
+     */
+    it('says the service is refusing and when to retry, when the breaker is open', async () => {
       youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      expect(result.error).toBe('YouTube API quota exceeded. Please try again later.');
+      expect(result.error).toContain('YouTube is not accepting requests right now');
+      expect(result.error).toMatch(/Try again in about .+\./);
       expect(result.errorCode).toBe('CIRCUIT_BREAKER_OPEN');
     });
 
-    it('should return quota exceeded error message on 403 response', async () => {
+    it('says the same on a 403 response', async () => {
       yt.channelsList.mockRejectedValueOnce(apiError(403, 'Quota exceeded', 'quotaExceeded'));
 
       const result = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      expect(result.error).toBe('YouTube API quota exceeded. Please try again later.');
+      expect(result.error).toContain('YouTube is not accepting requests right now');
       expect(result.errorCode).toBe(403);
     });
 
@@ -262,5 +285,56 @@ describe('YouTube Auth Validation - Quota Handling', () => {
       expect(result.error).toBeUndefined();
       expect(result.errorCode).toBeUndefined();
     });
+  });
+});
+
+/**
+ * What the breaker is told, and what gets written down when a failure is not an Error at all.
+ */
+describe('what a quota failure records', () => {
+  beforeEach(() => {
+    yt.channelsList.mockReset();
+    yt.refresh.mockReset();
+    youtubeCircuitBreaker.close();
+  });
+
+  const tokens = {
+    access_token: 'a',
+    refresh_token: 'b',
+    scope: 'https://www.googleapis.com/auth/youtube',
+    token_type: 'Bearer',
+    expiry_date: Date.now() + 3_600_000,
+  };
+
+  /**
+   * The reason is why a later refusal can say what happened instead of guessing "quota exceeded",
+   * and the clear time is why it can say when - a daily quota outlasts the breaker's probe window
+   * many times over.
+   */
+  it('tells the breaker why it opened and when that lifts', async () => {
+    yt.channelsList.mockRejectedValue(apiError(403, 'Quota exceeded', 'quotaExceeded'));
+
+    await validateYouTubeConnection(tokens, { clearCookie: vi.fn(), cookie: vi.fn() } as never);
+
+    const state = youtubeCircuitBreaker.getState();
+    expect(state.openReason).toBe(
+      'YouTube reported its quota exhausted while validating the connection',
+    );
+    expect(state.openClearsAt!.getTime()).toBeGreaterThan(state.nextAttemptTime);
+  });
+
+  // Not everything thrown is an Error. Logging `undefined` for the message loses the one detail
+  // that says what went wrong.
+  it('logs a usable message when the failure is not an Error', async () => {
+    yt.channelsList.mockRejectedValue('a bare string, not an Error');
+    const auth = vi.spyOn(Logger, 'auth').mockImplementation(() => undefined);
+
+    await validateYouTubeConnection(tokens, { clearCookie: vi.fn(), cookie: vi.fn() } as never);
+
+    expect(auth).toHaveBeenCalledWith(
+      'YouTube',
+      'connection invalid',
+      expect.objectContaining({ error: 'Unknown error' }),
+    );
   });
 });

@@ -63,10 +63,12 @@ export const YOUTUBE_BLOCKED_EVENT = 'youtube-blocked';
 export function youtubeWritesBlocked(): { reason: string; retryAt: Date } | null {
   if (!youtubeCircuitBreaker.isOpen()) return null;
 
-  const { nextAttemptTime, openReason } = youtubeCircuitBreaker.getState();
+  const { nextAttemptTime, openReason, openClearsAt } = youtubeCircuitBreaker.getState();
   return {
     reason: openReason || 'repeated YouTube failures',
-    retryAt: new Date(nextAttemptTime),
+    // When the cause is known to outlast the probe window - a daily quota - say when it really
+    // lifts. Otherwise the probe window is the best guess there is.
+    retryAt: openClearsAt ?? new Date(nextAttemptTime),
   };
 }
 
@@ -81,12 +83,55 @@ export function signalYoutubeBlocked(res: Response): void {
   res.set('HX-Trigger', YOUTUBE_BLOCKED_EVENT);
 }
 
-/** "in about 12 minutes" / "in under a minute" - for telling someone when to come back. */
+const MINUTE_MS = 60_000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
+const QUOTA_TIMEZONE = 'America/Los_Angeles';
+
+/**
+ * "in about 12 minutes" / "in about 5 hours" - for telling someone when to come back.
+ *
+ * Hours matter because the daily quota is a wait of that order, and "in about 313 minutes" is a
+ * number nobody converts. Kept as a duration rather than a wall-clock time: the server has no idea
+ * what timezone the reader is in, so "at 3:00 AM" would be a guess, while "in about 5 hours" is
+ * true wherever they are.
+ */
 export function describeRetryWait(retryAt: Date, now: number = Date.now()): string {
-  const minutes = Math.ceil((retryAt.getTime() - now) / 60000);
+  const minutes = Math.ceil((retryAt.getTime() - now) / MINUTE_MS);
   if (minutes <= 0) return 'now';
   if (minutes === 1) return 'in about a minute';
-  return `in about ${minutes} minutes`;
+  if (minutes < 60) return `in about ${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  return hours === 1 ? 'in about an hour' : `in about ${hours} hours`;
+}
+
+/**
+ * When the daily quota comes back: the next midnight Pacific, the clock Google resets it on.
+ *
+ * This is NOT the circuit breaker's `nextAttemptTime`. That is a 15-minute probe window - the
+ * right moment to try YouTube again in case it was a blip, and the wrong number to show a user,
+ * because a daily quota will still be gone when it elapses. Telling someone to come back in 15
+ * minutes all night is worse than telling them nothing.
+ *
+ * Measured as how much of the Pacific day is left rather than by building a date in another zone,
+ * so there is no offset arithmetic to get wrong. On the two days a year that day runs 23 or 25
+ * hours it is an hour out, which is inside the precision of a sentence that says "in about".
+ */
+export function dailyQuotaResetAt(now: Date = new Date()): Date {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: QUOTA_TIMEZONE,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(now);
+  const part = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  // Some ICU versions render midnight as hour 24 rather than 0.
+  const seconds = (part('hour') % 24) * 3600 + part('minute') * 60 + part('second');
+  // Milliseconds are included so the result lands exactly on the boundary. Without them it carries
+  // whatever fraction of a second the caller happened to ask at, and two calls a millisecond apart
+  // return two different instants for one fixed reset.
+  const intoDayMs = seconds * 1000 + now.getMilliseconds();
+  return new Date(now.getTime() + DAY_MS - intoDayMs);
 }
 
 let quotaUnitsUsed = 0;
@@ -175,7 +220,7 @@ export async function youtubeWrite<T>(operation: string, write: () => Promise<T>
 
       // Only a real daily-quota exhaustion justifies opening the breaker and aborting the run.
       if (failure === 'quota') {
-        youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
+        youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted', dailyQuotaResetAt());
         Logger.warn(
           'YouTube daily quota exceeded on write - opening circuit breaker',
           { operation, status, reason },

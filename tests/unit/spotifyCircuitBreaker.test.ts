@@ -50,15 +50,18 @@ describe('Spotify Circuit Breaker', () => {
       expect(state.state).toBe('CLOSED');
     });
 
-    it('should return false when circuit breaker is open', async () => {
+    // Throttled is not disconnected: the tokens still work, so they are kept and the user is told
+    // to wait rather than sent to reconnect.
+    it('reports unavailable, keeping the tokens, when the breaker is open', async () => {
       spotifyCircuitBreaker.open('Spotify reported its quota exhausted');
 
       const result = await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      expect(result.error).toBe('Spotify API quota exceeded. Please try again later.');
+      expect(result.unavailable).toBe(true);
+      expect(result.error).toContain('Spotify is not accepting requests right now');
       expect(result.errorCode).toBe('CIRCUIT_BREAKER_OPEN');
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('spotify_tokens');
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
     });
 
     it('should allow requests when circuit breaker is closed', async () => {
@@ -81,10 +84,11 @@ describe('Spotify Circuit Breaker', () => {
       const result = await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
       expect(result.connected).toBe(false);
-      expect(result.error).toBe('Spotify API quota exceeded. Please try again later.');
+      expect(result.unavailable).toBe(true);
+      expect(result.error).toContain('Spotify is not accepting requests right now');
       expect(result.errorCode).toBe(429);
       expect(spotifyCircuitBreaker.isOpen()).toBe(true);
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('spotify_tokens');
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
     });
 
     it('should record failure on non-429 errors', async () => {
@@ -161,12 +165,12 @@ describe('Spotify Circuit Breaker', () => {
   });
 
   describe('Token Management', () => {
-    it('should clear cookies when circuit opens on rate limit', async () => {
+    it('keeps cookies when the circuit is open on a rate limit', async () => {
       spotifyCircuitBreaker.open('Spotify reported its quota exhausted');
 
       await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
-      expect(mockResponse.clearCookie).toHaveBeenCalledWith('spotify_tokens');
+      expect(mockResponse.clearCookie).not.toHaveBeenCalled();
     });
 
     it('should provide user-friendly error message on circuit breaker open', async () => {
@@ -174,7 +178,8 @@ describe('Spotify Circuit Breaker', () => {
 
       const result = await validateSpotifyConnection(mockSpotifyTokens, mockResponse);
 
-      expect(result.error).toBe('Spotify API quota exceeded. Please try again later.');
+      expect(result.error).toContain('Spotify is not accepting requests right now');
+      expect(result.error).toMatch(/Try again .+\./);
     });
   });
 

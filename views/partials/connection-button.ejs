@@ -20,6 +20,12 @@ const hasError = error && error.trim().length > 0;
   </button>
 <% } else if (connected) { %>
   <button class="btn <%= buttonClass %> connect-btn connected" disabled data-service="<%= service %>" data-connected="true">Connected</button>
+<%# Still connected, but the service is refusing us. Offering "Connect" here would send the user
+    down a reconnect that cannot help, so the control says what is actually wrong and waits. %>
+<% } else if (typeof unavailable !== 'undefined' && unavailable) { %>
+  <button class="btn <%= buttonClass %> connect-btn disabled" disabled data-service="<%= service %>" data-connected="unavailable"<% if (hasError) { %> title="<%= error %>"<% } %>>
+    <%= serviceCapitalized %> Unavailable
+  </button>
 <% } else { %>
   <% if (typeof isDebug !== 'undefined' && isDebug) { %>
     <button class="btn <%= buttonClass %> connect-btn" data-service="<%= service %>" data-connected="false" title="(Demo mode)" onclick="return false;">

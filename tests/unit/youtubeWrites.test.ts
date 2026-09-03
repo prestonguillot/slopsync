@@ -25,6 +25,7 @@ vi.mock('../../src/lib/circuitBreaker', () => ({
       nextAttemptTime: 0,
       failureCount: 0,
       openReason: '',
+      openClearsAt: null,
     })),
   },
 }));
@@ -46,6 +47,7 @@ import {
   resetYoutubeWriteQuotaCounter,
   youtubeWritesBlocked,
   describeRetryWait,
+  dailyQuotaResetAt,
 } from '../../src/youtube/writes';
 
 const breaker = vi.mocked(youtubeCircuitBreaker);
@@ -328,7 +330,13 @@ describe('what a blocked write reports', () => {
       ),
     ).rejects.toThrow();
 
-    expect(breaker.open).toHaveBeenCalledWith('the daily YouTube API quota is exhausted');
+    // The clear time goes in with the reason. A daily quota outlasts the breaker's fifteen-minute
+    // probe window many times over, so without it every caller would tell the user to come back in
+    // fifteen minutes, over and over, until midnight Pacific.
+    expect(breaker.open).toHaveBeenCalledWith(
+      'the daily YouTube API quota is exhausted',
+      dailyQuotaResetAt(),
+    );
   });
 });
 
@@ -348,6 +356,7 @@ describe('youtubeWritesBlocked', () => {
       nextAttemptTime: Date.now() + 1000,
       failureCount: 0,
       openReason: '',
+      openClearsAt: null,
     } as ReturnType<typeof breaker.getState>);
 
     expect(youtubeWritesBlocked()?.reason).toBe('repeated YouTube failures');
@@ -361,7 +370,101 @@ describe('describeRetryWait', () => {
     ['in about 12 minutes', 12 * 60_000],
     ['in about a minute', 40_000],
     ['now', -5000],
+    ['in about 59 minutes', 59 * 60_000],
+    // A daily quota is a wait of hours, and "in about 313 minutes" is a number nobody converts.
+    ['in about an hour', 60 * 60_000],
+    ['in about 5 hours', 5 * 60 * 60_000],
   ])('says %s', (expected, offset) => {
     expect(describeRetryWait(new Date(now + offset), now)).toBe(expected);
+  });
+});
+
+/**
+ * The daily quota comes back at midnight Pacific, which is neither UTC midnight nor the circuit
+ * breaker's fifteen-minute probe. Both offsets are checked because Pacific is UTC-7 in summer and
+ * UTC-8 in winter, and reading the offset rather than assuming one is the whole point.
+ */
+describe('dailyQuotaResetAt', () => {
+  it.each([
+    ['during PDT (UTC-7)', '2026-09-03T05:30:00Z', '2026-09-03T07:00:00.000Z'],
+    ['during PST (UTC-8)', '2026-01-15T05:30:00Z', '2026-01-15T08:00:00.000Z'],
+    // A minute past Pacific midnight waits out the whole of the next day, not a moment.
+    ['just after a reset', '2026-09-03T07:01:00Z', '2026-09-04T07:00:00.000Z'],
+  ])('%s', (_label, now, expected) => {
+    expect(dailyQuotaResetAt(new Date(now)).toISOString()).toBe(expected);
+  });
+
+  it('is always ahead of now, and never more than a day out', () => {
+    const now = new Date();
+
+    const reset = dailyQuotaResetAt(now).getTime() - now.getTime();
+
+    expect(reset).toBeGreaterThan(0);
+    expect(reset).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+  });
+});
+
+/**
+ * The reset is a fixed instant, so asking twice must give the same answer. It used to carry the
+ * caller's milliseconds, which made every call a slightly different Date for one boundary - fine
+ * to display, quietly wrong to compare or store.
+ */
+describe('dailyQuotaResetAt is a boundary, not an offset', () => {
+  it('lands exactly on the second, with no milliseconds', () => {
+    expect(dailyQuotaResetAt(new Date('2026-09-03T05:37:23.427Z')).getMilliseconds()).toBe(0);
+  });
+
+  it('gives the same answer for two instants in the same Pacific day', () => {
+    const early = dailyQuotaResetAt(new Date('2026-09-03T05:37:23.427Z'));
+    const later = dailyQuotaResetAt(new Date('2026-09-03T06:12:44.001Z'));
+
+    expect(early.toISOString()).toBe(later.toISOString());
+  });
+
+  // Non-zero seconds, so dropping any one component of the time-of-day changes the answer.
+  it('accounts for the seconds, not just hours and minutes', () => {
+    expect(dailyQuotaResetAt(new Date('2026-09-03T05:37:23Z')).toISOString()).toBe(
+      '2026-09-03T07:00:00.000Z',
+    );
+  });
+});
+
+/**
+ * Which clock a blocked write quotes. The breaker holds two times that mean different things: when
+ * to probe again, and when the cause actually lifts. Quoting the probe window for a daily quota
+ * tells someone to come back every fifteen minutes until midnight Pacific.
+ */
+describe('which retry time a blocked write reports', () => {
+  const IN_FIFTEEN_MINUTES = Date.now() + 15 * 60_000;
+  const AT_MIDNIGHT_PACIFIC = new Date(Date.now() + 5 * 60 * 60_000);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    breaker.isOpen.mockReturnValue(true);
+  });
+
+  it('prefers when the cause lifts over when the breaker next probes', () => {
+    breaker.getState.mockReturnValue({
+      state: 'OPEN',
+      nextAttemptTime: IN_FIFTEEN_MINUTES,
+      failureCount: 0,
+      openReason: 'the daily YouTube API quota is exhausted',
+      openClearsAt: AT_MIDNIGHT_PACIFIC,
+    } as ReturnType<typeof breaker.getState>);
+
+    expect(youtubeWritesBlocked()?.retryAt).toBe(AT_MIDNIGHT_PACIFIC);
+  });
+
+  // Nothing knows better than the probe window for a breaker opened by unrelated failures.
+  it('falls back to the probe window when the cause has no known end', () => {
+    breaker.getState.mockReturnValue({
+      state: 'OPEN',
+      nextAttemptTime: IN_FIFTEEN_MINUTES,
+      failureCount: 0,
+      openReason: 'repeated YouTube failures',
+      openClearsAt: null,
+    } as ReturnType<typeof breaker.getState>);
+
+    expect(youtubeWritesBlocked()?.retryAt.getTime()).toBe(IN_FIFTEEN_MINUTES);
   });
 });

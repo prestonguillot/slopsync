@@ -46,6 +46,7 @@ import { runSync, SyncDeps } from '@/sync/runSync';
 import type { TrackSearchResult } from '@/sync/videoSearch';
 import type { ProgressUpdate } from '@/types/progress';
 import { InMemoryLeaseStore, type Lease, type LeaseStore } from '@/lib/leases';
+import { Logger } from '@/lib/logger';
 
 const PLAYLIST_ID = '37i9dQZF1DXcBWIGoYBM5M';
 
@@ -710,5 +711,48 @@ describe('two first-time syncs racing to create the playlist', () => {
 
     finishSecond();
     await second;
+  });
+});
+
+/**
+ * Losing the lease mid-sync. It means this sync stopped reporting progress for longer than the
+ * TTL while another run took the playlist - so it is said out loud, because the writes that follow
+ * are no longer the only ones touching it.
+ *
+ * It is reported rather than thrown: by the time it is noticed a write may already be in flight,
+ * and abandoning a reconcile part-way leaves a worse playlist than finishing it.
+ */
+describe('when the lease is lost mid-sync', () => {
+  let leases: InMemoryLeaseStore;
+
+  beforeEach(() => {
+    leases = new InMemoryLeaseStore();
+    h.findSyncedYoutubePlaylist.mockResolvedValue({ id: 'EXISTING_PL' });
+  });
+
+  const withLostLease = (): LeaseStore => ({
+    acquire: async (key, ttlMs) => {
+      const real = await leases.acquire(key, ttlMs);
+      return real && ({ ...real, touch: async () => false } as Lease);
+    },
+  });
+
+  it('says so, naming the playlist it no longer holds', async () => {
+    const warn = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
+
+    await run({ leases: withLostLease() });
+
+    expect(warn).toHaveBeenCalledWith(
+      'Sync lease lost - another sync may now hold this playlist',
+      expect.objectContaining({ key: expect.stringContaining('EXISTING_PL') }),
+    );
+  });
+
+  it('finishes the sync rather than abandoning it part-way', async () => {
+    vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
+
+    await run({ leases: withLostLease() });
+
+    expect(h.reconcilePlaylist).toHaveBeenCalled();
   });
 });

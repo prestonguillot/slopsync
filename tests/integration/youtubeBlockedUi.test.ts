@@ -60,10 +60,38 @@ describe('the breaker records why it opened', () => {
     expect(state.nextAttemptTime).toBeGreaterThan(Date.now());
   });
 
+  /**
+   * Two different times. `nextAttemptTime` is when to probe again in case this was a blip;
+   * `openClearsAt` is when the cause actually lifts, and only a caller that knows can say. A
+   * breaker opened by unrelated failures has no such knowledge, and must not invent one.
+   */
+  it('has no clear time when the caller did not know one', () => {
+    youtubeCircuitBreaker.open('2 consecutive request failures');
+
+    expect(youtubeCircuitBreaker.getState().openClearsAt).toBeNull();
+  });
+
+  it('keeps a clear time that outlasts the probe window', () => {
+    const midnightPacific = new Date(Date.now() + 5 * 60 * 60 * 1000);
+
+    youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted', midnightPacific);
+
+    const state = youtubeCircuitBreaker.getState();
+    expect(state.openClearsAt).toBe(midnightPacific);
+    expect(state.openClearsAt!.getTime()).toBeGreaterThan(state.nextAttemptTime);
+  });
+
   it('forgets it once closed, so a stale reason cannot be shown', () => {
     youtubeCircuitBreaker.open('2 consecutive request failures');
     youtubeCircuitBreaker.close();
 
     expect(youtubeCircuitBreaker.getState().openReason).toBe('');
+  });
+
+  it('forgets the clear time once closed too', () => {
+    youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted', new Date());
+    youtubeCircuitBreaker.close();
+
+    expect(youtubeCircuitBreaker.getState().openClearsAt).toBeNull();
   });
 });

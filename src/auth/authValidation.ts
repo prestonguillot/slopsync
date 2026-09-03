@@ -13,19 +13,39 @@ import { SpotifyTokens, TokenOutcome, YouTubeTokens } from '../types/oauth';
 import { youtubeCircuitBreaker, spotifyCircuitBreaker } from '../lib/circuitBreaker';
 import { resolveSpotifyToken } from '../spotify/auth';
 import { resolveYouTubeToken } from '../youtube/auth';
+import { dailyQuotaResetAt, describeRetryWait } from '../youtube/writes';
 
 /** The class itself is module-private; the shared helpers below only need its shape. */
 type Breaker = typeof spotifyCircuitBreaker;
 
+/** When the breaker will next let a request through - the right answer for a short throttle. */
+const breakerRetryAt = (breaker: Breaker) => new Date(breaker.getState().nextAttemptTime);
+
 type Service = 'Spotify' | 'YouTube';
 
 /**
- * Connection validation result with optional error details
+ * Connection validation result with optional error details.
+ *
+ * `connected: false` and `unavailable: true` are different answers and the UI has to tell them
+ * apart. Not connected means there are no usable credentials and the fix is to connect. Unavailable
+ * means the credentials are fine and the service is rationing us - offering a connect button there
+ * invites a reconnect that cannot help.
  */
 export interface ConnectionResult {
   connected: boolean;
+  /** The service is temporarily refusing us. The stored credentials are still good. */
+  unavailable?: boolean;
+  /** When it is worth trying again. Only set alongside `unavailable`. */
+  retryAt?: Date;
   error?: string; // User-friendly error message
   errorCode?: string | number; // Technical error code for logging
+}
+
+/** How a service says "you have had enough", and when it will stop saying it. */
+interface QuotaLimit {
+  /** 429 for Spotify, 403 for YouTube. */
+  status: number;
+  retryAt: () => Date;
 }
 
 /**
@@ -35,13 +55,15 @@ export interface ConnectionResult {
  * service's own "you have had enough" status opens it, and a genuine failure (5xx/network) counts
  * against it. An expired token never touches it - that is routine, not ill health.
  *
- * @param quotaStatus The status this service uses to say a limit was hit (429 Spotify, 403 YouTube).
+ * Tokens are cleared for credential problems only. A rationing service is not a credential
+ * problem: the tokens still work, and discarding them takes the refresh token with them, so the
+ * user is logged out by an outage and has to run the whole OAuth flow again once it lifts.
  */
 function toConnectionResult(
   service: Service,
   cookieName: string,
   breaker: Breaker,
-  quotaStatus: number,
+  quota: QuotaLimit,
   outcome: TokenOutcome,
   res: Response,
 ): ConnectionResult {
@@ -66,19 +88,19 @@ function toConnectionResult(
     error: error instanceof Error ? error.message : 'Unknown error',
     statusCode,
   });
-  res.clearCookie(cookieName);
 
-  // The service told us to back off - stop calling it until it resets.
-  if (statusCode === quotaStatus) {
-    breaker.open(`${service} reported its quota exhausted while validating the connection`);
-    return {
-      connected: false,
-      error: `${service} API quota exceeded. Please try again later.`,
-      errorCode: quotaStatus,
-    };
+  // The service told us to back off - stop calling it until it resets, but keep the credentials.
+  if (statusCode === quota.status) {
+    const clearsAt = quota.retryAt();
+    breaker.open(
+      `${service} reported its quota exhausted while validating the connection`,
+      clearsAt,
+    );
+    return unavailableResult(service, clearsAt, statusCode);
   }
 
   // Genuine API-health failure (5xx / network) - this is what the circuit breaker is for.
+  res.clearCookie(cookieName);
   breaker.recordFailure(error);
   return {
     connected: false,
@@ -87,21 +109,34 @@ function toConnectionResult(
   };
 }
 
-/** Refuse to call a service the breaker has already given up on; show it as disconnected. */
-function breakerOpenResult(
+/** One sentence for a service that is up but refusing us, saying when to come back. */
+function unavailableResult(
   service: Service,
-  cookieName: string,
-  breaker: Breaker,
-  res: Response,
+  retryAt: Date,
+  errorCode: string | number,
 ): ConnectionResult {
-  Logger.auth(service, 'circuit breaker is OPEN, clearing tokens', { state: breaker.getState() });
-  // Clear tokens so user sees disconnected state
-  res.clearCookie(cookieName);
   return {
     connected: false,
-    error: `${service} API quota exceeded. Please try again later.`,
-    errorCode: 'CIRCUIT_BREAKER_OPEN',
+    unavailable: true,
+    retryAt,
+    error: `${service} is not accepting requests right now. Try again ${describeRetryWait(retryAt)}.`,
+    errorCode,
   };
+}
+
+/**
+ * Refuse to call a service the breaker has already given up on.
+ *
+ * The tokens stay. Clearing them here is what turned a temporary limit into a lockout: every page
+ * load through an open breaker cleared the cookie again, so the user was shown as disconnected
+ * and sent to reconnect - down a path that needed the very service that was refusing.
+ */
+function breakerOpenResult(service: Service, breaker: Breaker, retryAt: Date): ConnectionResult {
+  Logger.auth(service, 'circuit breaker is OPEN, reporting unavailable', {
+    state: breaker.getState(),
+    retryAt: retryAt.toISOString(),
+  });
+  return unavailableResult(service, retryAt, 'CIRCUIT_BREAKER_OPEN');
 }
 
 /**
@@ -117,11 +152,23 @@ export async function validateSpotifyConnection(
   }
 
   if (!spotifyCircuitBreaker.canProceed()) {
-    return breakerOpenResult('Spotify', 'spotify_tokens', spotifyCircuitBreaker, res);
+    return breakerOpenResult(
+      'Spotify',
+      spotifyCircuitBreaker,
+      breakerRetryAt(spotifyCircuitBreaker),
+    );
   }
 
   const outcome = await resolveSpotifyToken(spotifyTokens, res);
-  return toConnectionResult('Spotify', 'spotify_tokens', spotifyCircuitBreaker, 429, outcome, res);
+  // Spotify's 429 is a short throttle, so its own reset window is the honest answer.
+  return toConnectionResult(
+    'Spotify',
+    'spotify_tokens',
+    spotifyCircuitBreaker,
+    { status: 429, retryAt: () => breakerRetryAt(spotifyCircuitBreaker) },
+    outcome,
+    res,
+  );
 }
 
 /**
@@ -137,11 +184,20 @@ export async function validateYouTubeConnection(
   }
 
   if (!youtubeCircuitBreaker.canProceed()) {
-    return breakerOpenResult('YouTube', 'youtube_tokens', youtubeCircuitBreaker, res);
+    return breakerOpenResult('YouTube', youtubeCircuitBreaker, dailyQuotaResetAt());
   }
 
   // probe: this endpoint exists to say whether YouTube is working for this user, which a token's
   // own expiry cannot answer. The call is how quota exhaustion and API health reach the breaker.
   const outcome = await resolveYouTubeToken(youtubeTokens, res, { probe: true });
-  return toConnectionResult('YouTube', 'youtube_tokens', youtubeCircuitBreaker, 403, outcome, res);
+  // A YouTube 403 on the daily quota lasts until midnight Pacific, not until the breaker's next
+  // probe - so the breaker's window would tell the user to come back in fifteen minutes, all night.
+  return toConnectionResult(
+    'YouTube',
+    'youtube_tokens',
+    youtubeCircuitBreaker,
+    { status: 403, retryAt: () => dailyQuotaResetAt() },
+    outcome,
+    res,
+  );
 }
