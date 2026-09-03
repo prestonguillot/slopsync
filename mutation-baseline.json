@@ -29,6 +29,7 @@
     "src/lib/envValidation.ts": 91.6,
     "src/lib/errorFormatter.ts": 100,
     "src/lib/htmlEscape.ts": 100,
+    "src/lib/leases.ts": 100,
     "src/lib/logger.ts": 90.5,
     "src/lib/minDisplayTime.ts": 87.5,
     "src/lib/ransom.ts": 83.67,
