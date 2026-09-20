@@ -17,7 +17,7 @@ describe('YouTube Quota Exceeded Handling', () => {
   describe('Token Clearing on Circuit Breaker Open', () => {
     it('should clear YouTube tokens when circuit breaker is open during playlist fetch', async () => {
       // Open the circuit breaker to simulate quota exceeded
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       // Make a request with both Spotify and YouTube tokens
       const response = await request(app)
@@ -35,7 +35,7 @@ describe('YouTube Quota Exceeded Handling', () => {
 
     it('should show disconnected state when circuit breaker is open', async () => {
       // Open circuit breaker
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       expect(youtubeCircuitBreaker.canProceed()).toBe(false);
 
       // Verify circuit breaker rejects requests
@@ -46,7 +46,7 @@ describe('YouTube Quota Exceeded Handling', () => {
   describe('Token Clearing on Validation', () => {
     it('should prevent validation when circuit breaker is open', () => {
       // Open circuit breaker
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       // Circuit breaker should block requests
       expect(youtubeCircuitBreaker.canProceed()).toBe(false);
@@ -69,7 +69,7 @@ describe('YouTube Quota Exceeded Handling', () => {
       expect(youtubeCircuitBreaker.isOpen()).toBe(false);
 
       // Quota exceeded - circuit breaker opens
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
 
       // Now user should see disconnected state
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
@@ -82,7 +82,7 @@ describe('YouTube Quota Exceeded Handling', () => {
       // "CONNECT TO YOUTUBE TO SYNC" buttons (disconnected state)
       // NOT "YOUTUBE QUOTA EXCEEDED" error buttons
 
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       expect(youtubeCircuitBreaker.isOpen()).toBe(true);
 
       // The route logic will clear tokens when canProceed() returns false
@@ -96,7 +96,7 @@ describe('YouTube Quota Exceeded Handling', () => {
       const testBreaker = youtubeCircuitBreaker;
 
       // Open the circuit
-      testBreaker.open();
+      testBreaker.open('a forced open, for the test');
       expect(testBreaker.isOpen()).toBe(true);
 
       // Before timeout, should still be open

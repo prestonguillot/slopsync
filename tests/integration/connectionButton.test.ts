@@ -180,3 +180,50 @@ describe('Connection Button Endpoints', () => {
     });
   });
 });
+
+/**
+ * A service that is up but rationing us is not a disconnected service, and the button has to say
+ * so. Offering "Connect" during a quota outage sends the user into an OAuth round trip that cannot
+ * help - and, before the validator stopped clearing tokens on a 403, actively made things worse by
+ * discarding the credentials that were still good.
+ */
+describe('when a service is unavailable rather than disconnected', () => {
+  beforeEach(() => {
+    mockAuth.validateYouTubeConnection.mockResolvedValue({
+      connected: false,
+      unavailable: true,
+      retryAt: new Date(Date.now() + 5 * 60 * 60 * 1000),
+      error: 'YouTube is not accepting requests right now. Try again in about 5 hours.',
+    });
+  });
+
+  it('does not offer a connect link', async () => {
+    const response = await request(app).get('/api/status/youtube/button');
+
+    expect(response.text).not.toContain('/auth/youtube/login');
+  });
+
+  it('says the service is unavailable', async () => {
+    const response = await request(app).get('/api/status/youtube/button');
+
+    expect(response.text).toContain('Youtube Unavailable');
+    expect(response.text).toContain('data-connected="unavailable"');
+    expect(response.text).toContain('disabled');
+  });
+
+  it('carries the reason, so the wait is discoverable from the control itself', async () => {
+    const response = await request(app).get('/api/status/youtube/button');
+
+    expect(response.text).toContain('Try again in about 5 hours');
+  });
+
+  // The contrast that gives the above its meaning: genuinely disconnected still offers the link.
+  it('still offers the link when actually disconnected', async () => {
+    mockAuth.validateYouTubeConnection.mockResolvedValue({ connected: false });
+
+    const response = await request(app).get('/api/status/youtube/button');
+
+    expect(response.text).toContain('/auth/youtube/login');
+    expect(response.text).not.toContain('Unavailable');
+  });
+});

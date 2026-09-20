@@ -603,7 +603,7 @@ describe('Spotify Playlists', () => {
     });
 
     it('drops the YouTube connection when the circuit breaker is open', async () => {
-      youtubeCircuitBreaker.open();
+      youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
       mockedGetUserPlaylists.mockResolvedValue([playlistSummary('1', 'A', 1)]);
 
       const response = await list([spotifyCookie, `youtube_tokens=${createMockYouTubeToken()}`]);

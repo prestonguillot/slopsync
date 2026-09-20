@@ -10,7 +10,13 @@ import { escapeHtml } from '../lib/htmlEscape';
 import { ensureValidYouTubeToken } from '../youtube/auth';
 import { ensureValidSpotifyToken } from '../spotify/auth';
 import { authExpired, signalAuthExpired } from '../auth/authExpired';
-import { classifyYoutubeError } from '../youtube/writes';
+import {
+  classifyYoutubeError,
+  describeRetryWait,
+  signalYoutubeBlocked,
+  youtubeWritesBlocked,
+  YoutubeQuotaError,
+} from '../youtube/writes';
 import { z } from 'zod';
 import ejs from 'ejs';
 import path from 'path';
@@ -148,6 +154,10 @@ router.get(
           hasYoutubeConnection: !!youtubeTokens,
           hasYoutubePlaylist: playlistDetails.hasYoutubePlaylist,
           needsResync: playlistDetails.needsResync,
+          // Linking or replacing a video is a YouTube write, so the edit stamps are as unusable as
+          // the sync button while writes are refused. The rows still render - reading the playlist
+          // is unaffected - but the controls that cannot work say why instead of failing on click.
+          youtubeBlocked: youtubeWritesBlocked(),
         },
       );
 
@@ -473,6 +483,28 @@ router.post(
       if (expired) {
         signalAuthExpired(res, expired);
         return res.status(401).render('partials/auth-expired', { ...expired });
+      }
+
+      // Same argument as the branch above, for limits rather than sessions: "please try again" is
+      // wrong advice when the next attempt is refused before it reaches YouTube. Say what is
+      // blocking and when it lifts. 503, not 500 - the app is fine, the door is shut.
+      if (classifyYoutubeError(error) !== 'other') {
+        const blocked = youtubeWritesBlocked();
+        const when = blocked ? describeRetryWait(blocked.retryAt) : 'shortly';
+        const reason =
+          error instanceof YoutubeQuotaError ? error.reason : 'YouTube refused the request';
+
+        signalYoutubeBlocked(res);
+        const html = await ejs.renderFile(
+          path.join(__dirname, '../../views/partials/error-message.ejs'),
+          {
+            type: 'warning',
+            title: 'YouTube is not accepting changes',
+            message: `Nothing was changed, because ${reason}.`,
+            details: `Editing is disabled until this clears - retry ${when}. A daily quota resets at midnight Pacific.`,
+          },
+        );
+        return res.status(503).send(html);
       }
 
       const html = await ejs.renderFile(
