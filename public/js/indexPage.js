@@ -68,3 +68,49 @@ document.addEventListener('keydown', function (e) {
     e.preventDefault(); // stop space from scrolling the page
   }
 });
+
+/**
+ * Stop offering actions YouTube is currently refusing.
+ *
+ * The server disables these when it renders (see the playlist-button route and
+ * partials/playlist-details.ejs), which covers a page loaded while writes are already blocked. This
+ * covers the other case: a limit hit part-way through a session, where every sync and edit control
+ * already on screen would otherwise keep inviting a click whose only outcome is the same error.
+ *
+ * Done here rather than by re-fetching each control: a library of sixty playlists would be sixty
+ * requests to learn one fact the page has already been told. Disabling is UI state, which is the
+ * client's job.
+ */
+document.body.addEventListener('youtube-blocked', function () {
+  document.querySelectorAll('.sync-btn:not([disabled])').forEach(function (button) {
+    button.disabled = true;
+    button.title = 'YouTube is not accepting changes right now.';
+  });
+
+  // The edit/link stamps: anything that opens the video picker ends in a write.
+  document
+    .querySelectorAll('.track-stamps button[hx-get]:not([disabled])')
+    .forEach(function (button) {
+      button.disabled = true;
+      button.title = 'YouTube is not accepting changes right now.';
+    });
+});
+
+/**
+ * Raise the same event for content that arrives through the SSE stream.
+ *
+ * A sync reports its own failure inside a stream whose headers went out before the sync started,
+ * so the server cannot send the HX-Trigger it uses elsewhere. It marks the partial instead, and
+ * this turns that marker into the event the handler above already listens for - one code path
+ * disabling the controls whichever way the news arrives.
+ */
+document.body.addEventListener('htmx:afterSwap', function (e) {
+  const swapped = e.target;
+  if (!swapped || !swapped.querySelector) return;
+  if (
+    swapped.matches?.('[data-youtube-blocked]') ||
+    swapped.querySelector('[data-youtube-blocked]')
+  ) {
+    document.body.dispatchEvent(new CustomEvent('youtube-blocked'));
+  }
+});

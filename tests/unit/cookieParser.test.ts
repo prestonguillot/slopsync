@@ -326,10 +326,12 @@ describe('validateAndSerializeYouTubeTokens', () => {
     expect(JSON.parse(validateAndSerializeYouTubeTokens(valid))).toMatchObject(valid);
   });
 
-  it('keeps the cached channel id', () => {
+  // Cookies written before the channel id was dropped still parse; the field is simply not kept.
+  it('drops a channel id left over from an older cookie', () => {
     const json = validateAndSerializeYouTubeTokens({ ...valid, channel_id: 'UC123' });
 
-    expect(JSON.parse(json).channel_id).toBe('UC123');
+    expect(JSON.parse(json).channel_id).toBeUndefined();
+    expect(JSON.parse(json).access_token).toBe(valid.access_token);
   });
 
   it('accepts a token set with no refresh token', () => {

@@ -178,10 +178,14 @@ describe('refreshYoutubeAccessToken', () => {
 });
 
 /**
- * The authorize URL. access_type=offline and prompt=consent are load-bearing, not decoration: with
- * only offline, Google returns a refresh_token on the FIRST consent and none on reconnect, so the
- * access token died at its 1h expiry with nothing to refresh it. That was a real bug; these hold it
- * shut.
+ * The authorize URL. Every parameter here is load-bearing, not decoration:
+ *
+ * - `access_type=offline` alone gets a refresh_token on the FIRST consent and none on reconnect,
+ *   leaving the access token to die at its 1h expiry with nothing to refresh it. `prompt=consent`
+ *   is what makes Google re-issue one every time.
+ * - `prompt=select_account` keeps the account off the browser's existing session. Resolved
+ *   implicitly, a profile signed in to an account that cannot authorize the app fails generically
+ *   from a URL that is otherwise perfectly valid.
  */
 describe('getYoutubeAuthUrl', () => {
   const params = (url: string) => new URL(url).searchParams;
@@ -191,8 +195,21 @@ describe('getYoutubeAuthUrl', () => {
     const p = params(getYoutubeAuthUrl(['https://www.googleapis.com/auth/youtube']));
 
     expect(p.get('access_type')).toBe('offline');
-    expect(p.get('prompt')).toBe('consent');
+    // Space-delimited, so assert membership rather than the whole string: what matters is that
+    // both prompts are asked for, not the order Google happens to be sent them in.
+    expect(p.get('prompt')?.split(' ')).toEqual(
+      expect.arrayContaining(['select_account', 'consent']),
+    );
     expect(p.get('response_type')).toBe('code');
+  });
+
+  // The account is never left to the browser's existing session to resolve: a profile signed in to
+  // an account that cannot authorize the app fails there, generically, from a valid URL.
+  it('makes the user pick the account rather than inheriting the browser session', async () => {
+    const { getYoutubeAuthUrl } = await import('../../src/youtube/client');
+    const p = params(getYoutubeAuthUrl(['https://www.googleapis.com/auth/youtube']));
+
+    expect(p.get('prompt')?.split(' ')).toContain('select_account');
   });
 
   // Scopes are space-separated in one param; join them with anything else and Google reads one

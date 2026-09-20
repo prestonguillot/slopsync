@@ -13,6 +13,7 @@ import { searchTracksForVideos, TrackSearchResult } from './videoSearch';
 import { classifyTracksForSync } from './trackClassification';
 import { getPlaylist } from '../spotify/client';
 import { ProgressUpdate } from '../types/progress';
+import { syncLeases, withLease, type Lease, type LeaseStore } from '../lib/leases';
 
 type YoutubeClient = Awaited<ReturnType<typeof ensureValidYouTubeToken>>['client'];
 
@@ -26,11 +27,48 @@ export interface SyncDeps {
   emitProgress: (update: ProgressUpdate) => Promise<void>;
   /** Aborted when the client disconnects mid-sync. */
   signal?: AbortSignal;
+  /** Injectable so a test can watch two syncs contend; defaults to the process-wide store. */
+  leases?: LeaseStore;
 }
 
 // Total progress phases: search (70%) + playlist operations (30%)
 const SEARCH_PHASE_WEIGHT = 0.7;
 const PLAYLIST_PHASE_WEIGHT = 0.3;
+
+/**
+ * How long a sync holds its playlist between progress reports.
+ *
+ * Sized off the longest gap the sync can legitimately go without reporting, which is one track's
+ * search ladder: five queries, each a 10s fetch timeout plus a 1s sleep, so about 55s. Everything
+ * else is far smaller - write retries total 3.5s of backoff, the deliberate sleeps are 1-3s. Two
+ * minutes clears that with room, and still frees a dead worker's playlist in minutes rather than
+ * holding it for the length of a sync nobody is running.
+ */
+const SYNC_LEASE_TTL_MS = 120_000;
+
+/** The create section is one list plus one insert, so it neither needs nor deserves longer. */
+const CREATE_LEASE_TTL_MS = 30_000;
+
+/** A loser waits for the winner's create rather than failing: it needs to see what was created. */
+const CREATE_LEASE_WAIT_MS = 30_000;
+
+/** Held for the whole sync. The id is globally unique, so this needs no per-user scoping. */
+const syncLeaseKey = (youtubePlaylistId: string) => `sync:playlist:${youtubePlaylistId}`;
+
+/**
+ * Held across the check-and-create only.
+ *
+ * Keyed on the title because that is the one name a playlist has before it exists - there is no id
+ * to key on yet, and the first sync is exactly when two runs would otherwise create two copies.
+ * Titles are unique per account rather than globally, so two people creating the same title
+ * serialize briefly. That is over-broad, not wrong: each still looks up in their own account.
+ */
+const createLeaseKey = (title: string) => `sync:create:${title}`;
+
+/** Carries the lease back to `runSync`'s finally through the body's many early returns. */
+interface LeaseSlot {
+  current: Lease | null;
+}
 
 /** The video ids the playlist should hold, in the Spotify playlist's track order. */
 function desiredOrder(
@@ -64,6 +102,17 @@ const playlistPhasePercentage = (done: number, total: number) =>
  * sync can be run without an SSE stream to attach to.
  */
 export async function runSync(deps: SyncDeps): Promise<void> {
+  const lease: LeaseSlot = { current: null };
+  try {
+    await performSync(deps, lease);
+  } finally {
+    // The single release point: this runs on success, on a throw, and on the client disconnect
+    // that aborts mid-sync, so no path can strand a playlist until its TTL runs out.
+    await lease.current?.release();
+  }
+}
+
+async function performSync(deps: SyncDeps, lease: LeaseSlot): Promise<void> {
   const {
     playlistId,
     batchSizeRaw,
@@ -71,9 +120,25 @@ export async function runSync(deps: SyncDeps): Promise<void> {
     youtube,
     initialQuotaUsed,
     emit,
-    emitProgress,
     signal,
+    leases = syncLeases,
   } = deps;
+
+  /**
+   * Reporting progress is what renews the lease, so it lasts exactly as long as the sync is doing
+   * something. A timer would renew for as long as the process was alive, which a hung sync also is.
+   *
+   * A lost lease is reported, not thrown: by the time it is noticed a write may already be in
+   * flight, and abandoning a reconcile part-way leaves a worse playlist than finishing it.
+   */
+  const emitProgress = async (update: ProgressUpdate): Promise<void> => {
+    await deps.emitProgress(update);
+    const held = lease.current;
+    if (held && !(await held.touch())) {
+      Logger.warn('Sync lease lost - another sync may now hold this playlist', { key: held.key });
+    }
+  };
+
   const startTime = Date.now();
 
   let apiCallCount = 0;
@@ -171,6 +236,27 @@ export async function runSync(deps: SyncDeps): Promise<void> {
     if (existingPlaylist) {
       youtubePlaylistId = existingPlaylist.id!;
       isUpdateMode = true;
+
+      // Taken before the playlist is read, not merely before it is written: the plan and the
+      // writes derived from it have to see one consistent playlist, and the read is where that
+      // starts. Refusing here also spares the loser the whole search phase.
+      lease.current = await leases.acquire(syncLeaseKey(youtubePlaylistId), SYNC_LEASE_TTL_MS);
+      if (!lease.current) {
+        Logger.warn('Refused a sync for a playlist that is already syncing', {
+          title: playlistTitle,
+          id: youtubePlaylistId,
+        });
+        emit(
+          await renderPartial('sync-error.ejs', {
+            playlistId,
+            title: 'This playlist is already syncing',
+            message: 'Another sync is running for this playlist right now.',
+            details: 'Wait for it to finish, then start this one again.',
+          }),
+        );
+        return;
+      }
+
       Logger.external('YouTube', 'Found existing playlist - entering UPDATE mode', {
         title: playlistTitle,
         id: youtubePlaylistId,
@@ -340,20 +426,62 @@ export async function runSync(deps: SyncDeps): Promise<void> {
 
   // Create playlist if it doesn't exist
   if (!existingPlaylist) {
-    const playlistResponse = await youtubeWrite('playlists.insert', () =>
-      youtube.playlists.insert({
-        part: ['snippet', 'status'],
-        requestBody: {
-          snippet: {
-            title: playlistTitle,
-            description: `Synced from Spotify playlist: ${playlist.name}`,
-          },
-          status: { privacyStatus: 'private' },
-        },
-      }),
+    /**
+     * The check and the create are one guarded step, and the check is made again inside it. The
+     * `existingPlaylist` answer above was taken before the search phase - minutes and a whole
+     * scrape ago - so a sync that started alongside this one may have created this very playlist
+     * since. Guarding only the insert would protect nothing: both runs would arrive still carrying
+     * their own stale "it does not exist", take the lease in turn, and create one copy each.
+     *
+     * Null means somebody else got there first.
+     */
+    const createdId = await withLease(
+      leases,
+      createLeaseKey(playlistTitle),
+      { ttlMs: CREATE_LEASE_TTL_MS, waitMs: CREATE_LEASE_WAIT_MS },
+      async () => {
+        const raced = await findSyncedYoutubePlaylist(youtube, playlist.name);
+        logApiCall('playlist search', 1);
+        if (raced) return null;
+
+        const playlistResponse = await youtubeWrite('playlists.insert', () =>
+          youtube.playlists.insert({
+            part: ['snippet', 'status'],
+            requestBody: {
+              snippet: {
+                title: playlistTitle,
+                description: `Synced from Spotify playlist: ${playlist.name}`,
+              },
+              status: { privacyStatus: 'private' },
+            },
+          }),
+        );
+        logApiCall('playlist creation', 50);
+        return playlistResponse.data.id!;
+      },
     );
-    logApiCall('playlist creation', 50);
-    youtubePlaylistId = playlistResponse.data.id!;
+
+    if (createdId === null) {
+      // This sync's plan was computed against a playlist that did not exist, so its "current
+      // items" are empty and reconciling would insert every video into a playlist that already
+      // holds them. Re-run and it takes the update path instead.
+      Logger.warn('Another sync created this playlist first - stopping before any write', {
+        title: playlistTitle,
+      });
+      emit(
+        await renderPartial('sync-error.ejs', {
+          playlistId,
+          title: 'Another sync got here first',
+          message: 'Another sync created this YouTube playlist while this one was searching.',
+          details: 'Start this sync again and it will update that playlist instead.',
+        }),
+      );
+      return;
+    }
+
+    youtubePlaylistId = createdId;
+    // No refusal to handle: the id was minted a moment ago, so nothing else can be holding it.
+    lease.current = await leases.acquire(syncLeaseKey(youtubePlaylistId), SYNC_LEASE_TTL_MS);
     Logger.external('YouTube', 'Created new playlist', {
       title: playlistTitle,
       id: youtubePlaylistId,
