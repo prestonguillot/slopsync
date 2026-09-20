@@ -4,13 +4,7 @@ import { getSecureCookieOptions } from '../auth/cookieParser';
 import { issueOAuthState, verifyOAuthState, canonicalLoginUrl } from '../auth/oauthState';
 import { validate, schemas, ValidatedRequest } from '../lib/validation';
 import { validateAndSerializeYouTubeTokens } from '../auth/cookieParser';
-import {
-  getYoutubeAuthUrl,
-  exchangeYoutubeCode,
-  createYoutubeClient,
-  YoutubeApiError,
-} from '../youtube/client';
-import { classifyYoutubeError } from '../youtube/writes';
+import { getYoutubeAuthUrl, exchangeYoutubeCode, YoutubeApiError } from '../youtube/client';
 import { z } from 'zod';
 
 const router = Router();
@@ -61,30 +55,16 @@ router.get(
     }
 
     try {
+      // Authenticating costs no quota, and nothing here spends any: this used to call
+      // channels.list to cache a channel id, which meant a connect could only succeed while quota
+      // remained. Exhaust the quota and the app cleared your tokens on the next page load and then
+      // refused every attempt to reconnect, because the reconnect needed the quota that was gone.
       const tokens = await exchangeYoutubeCode(code as string);
 
-      // Fetch channel ID to cache in tokens (avoids an API call later)
-      Logger.auth('YouTube', 'fetching channel ID for caching');
-      const youtube = createYoutubeClient(tokens.access_token);
-      const channelsResponse = await youtube.channels.list({
-        part: ['id'],
-        mine: true,
-        maxResults: 1,
-      });
-
-      const channelId = channelsResponse.data.items?.[0]?.id;
-      if (!channelId) {
-        throw new Error('Could not retrieve YouTube channel ID');
-      }
-
-      // Validate tokens (with channel id) before storing in cookie
-      const serializedTokens = validateAndSerializeYouTubeTokens({
-        ...tokens,
-        channel_id: channelId,
-      });
+      const serializedTokens = validateAndSerializeYouTubeTokens(tokens);
       res.cookie('youtube_tokens', serializedTokens, getSecureCookieOptions());
 
-      Logger.auth('YouTube', 'tokens with channel ID stored in cookie', { channelId });
+      Logger.auth('YouTube', 'tokens stored in cookie');
 
       // ?connected=youtube marks this as the moment YouTube was connected, which is something only
       // this callback knows: the status endpoint holds no session and cannot tell "connected" from
@@ -93,15 +73,14 @@ router.get(
       res.redirect('/?connected=youtube');
     } catch (error) {
       Logger.error('Error getting YouTube tokens', {}, error);
-      let errorReason = 'failed';
-      // A bare 403 is not quota - during OAuth it is far more likely to be a permissions or
-      // consent problem, and calling that "quota exceeded" sent the user off to wait for a
-      // midnight reset that would never fix it.
-      if (classifyYoutubeError(error) === 'quota') {
-        errorReason = 'quota_exceeded';
-      } else if (error instanceof YoutubeApiError && (error.code === 401 || error.code === 400)) {
-        errorReason = 'auth_error';
-      }
+      // Only the code exchange can fail here, and it talks to Google's token endpoint rather than
+      // the Data API, so there is no quota answer to classify - a 403 from it is a consent or
+      // permissions problem, never a spent budget. 400 and 401 mean the code or token is no good,
+      // which the user can fix by connecting again; anything else is not theirs to fix.
+      const errorReason =
+        error instanceof YoutubeApiError && (error.code === 401 || error.code === 400)
+          ? 'auth_error'
+          : 'failed';
       res.redirect(`/?error=youtube&reason=${errorReason}`);
     }
   },

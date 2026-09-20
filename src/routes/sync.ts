@@ -1,6 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { ensureValidYouTubeToken } from '../youtube/auth';
-import { classifyYoutubeError } from '../youtube/writes';
+import {
+  classifyYoutubeError,
+  describeRetryWait,
+  youtubeWritesBlocked,
+  YoutubeQuotaError,
+} from '../youtube/writes';
 import { Logger } from '../lib/logger';
 import { renderPartial } from '../lib/renderPartial';
 import { validate, schemas, ValidatedRequest } from '../lib/validation';
@@ -17,14 +22,6 @@ import { ProgressUpdate } from '../types/progress';
 const router = Router();
 
 type YoutubeClient = Awaited<ReturnType<typeof ensureValidYouTubeToken>>['client'];
-
-// Helper function to get YouTube user ID from cached channel ID in tokens
-function getYouTubeUserId(youtubeTokens: YouTubeTokens): string {
-  if (!youtubeTokens.channel_id) {
-    throw new Error('YouTube channel ID not found in tokens - re-authenticate with YouTube');
-  }
-  return youtubeTokens.channel_id;
-}
 
 // POST returns the SSE subscriber fragment (CSRF-protected); it does no work.
 // The subscriber connects to the stream below, which runs the sync.
@@ -88,7 +85,6 @@ router.get(
       const yt = await ensureValidYouTubeToken(req as Request, res);
       youtube = yt.client;
       initialQuotaUsed = yt.quotaUsed;
-      getYouTubeUserId(youtubeTokens); // validates channel id is present
     } catch (error) {
       const expired = authExpired(error);
       if (expired) {
@@ -154,12 +150,27 @@ router.get(
       const failure = classifyYoutubeError(error);
       if (failure !== 'other') {
         Logger.warn('YouTube refused the sync on limits', { failure });
+        // Not always the daily quota: the breaker also opens after unrelated failures, and this
+        // said "your quota has been exceeded" for all of them - sending people to wait for a
+        // midnight reset that was never the problem.
+        const blocked = youtubeWritesBlocked();
+        const reason =
+          error instanceof YoutubeQuotaError ? error.reason : 'YouTube refused the request';
+        // No HX-Trigger here, unlike the other routes: the SSE headers went out with writeHead
+        // before the sync began, and setting one now throws ERR_HTTP_HEADERS_SENT. The partial
+        // carries a marker instead and the client raises the event when it lands.
         html = await renderPartial('sync-error.ejs', {
           playlistId,
-          title: 'YouTube Quota Exceeded',
-          message: 'Your YouTube API quota has been exceeded. YouTube limits API usage per day.',
-          details:
-            'The quota resets at midnight Pacific Time. You can continue using the app with existing playlists, but cannot sync new content until the quota resets.',
+          youtubeBlocked: true,
+          title: 'YouTube is not accepting changes',
+          message: `The sync stopped because ${reason}.`,
+          // The retry time already accounts for what actually happened - a daily quota reports the
+          // midnight Pacific reset, a run of unrelated failures reports the breaker's probe window.
+          // Naming the quota reset on top of that asserted a cause for every refusal, which is the
+          // same wrong claim in the details that the title used to make.
+          details: blocked
+            ? `Syncing is paused until this clears - try again ${describeRetryWait(blocked.retryAt)}.`
+            : 'Try again shortly.',
         });
       } else {
         html = await renderPartial('sync-error.ejs', {

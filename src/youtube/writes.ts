@@ -1,3 +1,4 @@
+import { Response } from 'express';
 import { youtubeCircuitBreaker } from '../lib/circuitBreaker';
 import { YoutubeApiError } from './client';
 import { Logger } from '../lib/logger';
@@ -35,10 +36,102 @@ function isTransient(status: number | undefined, failure: YoutubeFailure): boole
 
 /** Thrown when a write is refused (breaker open) or YouTube reports quota exceeded. */
 export class YoutubeQuotaError extends Error {
-  constructor(message: string) {
+  /** Why writes are refused, in words a user can read. */
+  readonly reason: string;
+  /** When the breaker will next let a request through, if it is open. */
+  readonly retryAt?: Date;
+
+  constructor(message: string, reason = message, retryAt?: Date) {
     super(message);
     this.name = 'YoutubeQuotaError';
+    this.reason = reason;
+    this.retryAt = retryAt;
   }
+}
+
+/**
+ * Why YouTube writes are currently refused, or null when they are not.
+ *
+ * One place answers this, because three callers need the same answer for different surfaces: the
+ * routes that must not report a known limit as a 500, and the buttons that must not offer an action
+ * whose only possible outcome is that error. Asking the breaker directly from each of them is how
+ * they drift apart.
+ */
+/** The event the sync and edit controls listen for, so they re-check when a limit is hit. */
+export const YOUTUBE_BLOCKED_EVENT = 'youtube-blocked';
+
+export function youtubeWritesBlocked(): { reason: string; retryAt: Date } | null {
+  if (!youtubeCircuitBreaker.isOpen()) return null;
+
+  const { nextAttemptTime, openReason, openClearsAt } = youtubeCircuitBreaker.getState();
+  return {
+    reason: openReason || 'repeated YouTube failures',
+    // When the cause is known to outlast the probe window - a daily quota - say when it really
+    // lifts. Otherwise the probe window is the best guess there is.
+    retryAt: openClearsAt ?? new Date(nextAttemptTime),
+  };
+}
+
+/**
+ * Tell the page that YouTube is refusing writes, so the controls that need them stop offering.
+ *
+ * Same mechanism as signalAuthExpired: HTMX turns the header into an event, and the sync and edit
+ * controls re-fetch and come back disabled. Without it a limit discovered mid-session leaves every
+ * button on the page still inviting a click whose only outcome is this same error.
+ */
+export function signalYoutubeBlocked(res: Response): void {
+  res.set('HX-Trigger', YOUTUBE_BLOCKED_EVENT);
+}
+
+const MINUTE_MS = 60_000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
+const QUOTA_TIMEZONE = 'America/Los_Angeles';
+
+/**
+ * "in about 12 minutes" / "in about 5 hours" - for telling someone when to come back.
+ *
+ * Hours matter because the daily quota is a wait of that order, and "in about 313 minutes" is a
+ * number nobody converts. Kept as a duration rather than a wall-clock time: the server has no idea
+ * what timezone the reader is in, so "at 3:00 AM" would be a guess, while "in about 5 hours" is
+ * true wherever they are.
+ */
+export function describeRetryWait(retryAt: Date, now: number = Date.now()): string {
+  const minutes = Math.ceil((retryAt.getTime() - now) / MINUTE_MS);
+  if (minutes <= 0) return 'now';
+  if (minutes === 1) return 'in about a minute';
+  if (minutes < 60) return `in about ${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  return hours === 1 ? 'in about an hour' : `in about ${hours} hours`;
+}
+
+/**
+ * When the daily quota comes back: the next midnight Pacific, the clock Google resets it on.
+ *
+ * This is NOT the circuit breaker's `nextAttemptTime`. That is a 15-minute probe window - the
+ * right moment to try YouTube again in case it was a blip, and the wrong number to show a user,
+ * because a daily quota will still be gone when it elapses. Telling someone to come back in 15
+ * minutes all night is worse than telling them nothing.
+ *
+ * Measured as how much of the Pacific day is left rather than by building a date in another zone,
+ * so there is no offset arithmetic to get wrong. On the two days a year that day runs 23 or 25
+ * hours it is an hour out, which is inside the precision of a sentence that says "in about".
+ */
+export function dailyQuotaResetAt(now: Date = new Date()): Date {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: QUOTA_TIMEZONE,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(now);
+  const part = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  // Some ICU versions render midnight as hour 24 rather than 0.
+  const seconds = (part('hour') % 24) * 3600 + part('minute') * 60 + part('second');
+  // Milliseconds are included so the result lands exactly on the boundary. Without them it carries
+  // whatever fraction of a second the caller happened to ask at, and two calls a millisecond apart
+  // return two different instants for one fixed reset.
+  const intoDayMs = seconds * 1000 + now.getMilliseconds();
+  return new Date(now.getTime() + DAY_MS - intoDayMs);
 }
 
 let quotaUnitsUsed = 0;
@@ -95,7 +188,20 @@ export function classifyYoutubeError(error: unknown): YoutubeFailure {
  */
 export async function youtubeWrite<T>(operation: string, write: () => Promise<T>): Promise<T> {
   if (!youtubeCircuitBreaker.canProceed()) {
-    throw new YoutubeQuotaError(`YouTube write refused - circuit breaker open (${operation})`);
+    const blocked = youtubeWritesBlocked();
+    // Logged here, not left to the caller. The throw is the app refusing on its own behalf - no
+    // request was made, so nothing else in the log says a breaker was involved, and the route that
+    // catches this only knows something went wrong.
+    Logger.warn('YouTube write refused - circuit breaker is open', {
+      operation,
+      reason: blocked?.reason,
+      retryAt: blocked?.retryAt.toISOString(),
+    });
+    throw new YoutubeQuotaError(
+      `YouTube write refused - circuit breaker open (${operation})`,
+      blocked?.reason ?? 'repeated YouTube failures',
+      blocked?.retryAt,
+    );
   }
 
   for (let attempt = 1; ; attempt++) {
@@ -114,13 +220,18 @@ export async function youtubeWrite<T>(operation: string, write: () => Promise<T>
 
       // Only a real daily-quota exhaustion justifies opening the breaker and aborting the run.
       if (failure === 'quota') {
-        youtubeCircuitBreaker.open();
+        youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted', dailyQuotaResetAt());
         Logger.warn(
           'YouTube daily quota exceeded on write - opening circuit breaker',
           { operation, status, reason },
           error,
         );
-        throw new YoutubeQuotaError(`YouTube quota exceeded during ${operation}`);
+        const blocked = youtubeWritesBlocked();
+        throw new YoutubeQuotaError(
+          `YouTube quota exceeded during ${operation}`,
+          'the daily YouTube API quota is exhausted',
+          blocked?.retryAt,
+        );
       }
 
       if (isTransient(status, failure) && attempt < MAX_WRITE_ATTEMPTS) {

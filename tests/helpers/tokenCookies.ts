@@ -13,7 +13,6 @@ interface YouTubeTokenOverrides {
   refresh_token?: string;
   scope?: string;
   token_type?: string;
-  channel_id?: string;
   /** Milliseconds from now. Negative for a token that has already expired. */
   expiresInMs?: number;
 }
@@ -24,7 +23,6 @@ export function youtubeTokenCookie({
   refresh_token = 'yt-refresh',
   scope = 'https://www.googleapis.com/auth/youtube',
   token_type = 'Bearer',
-  channel_id,
   expiresInMs = 3_600_000,
 }: YouTubeTokenOverrides = {}): string {
   return `youtube_tokens=${JSON.stringify({
@@ -32,7 +30,6 @@ export function youtubeTokenCookie({
     refresh_token,
     scope,
     token_type,
-    ...(channel_id ? { channel_id } : {}),
     expiry_date: Date.now() + expiresInMs,
   })}`;
 }

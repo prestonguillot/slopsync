@@ -68,11 +68,11 @@
     "htmx-ext-sse": "2.2.4",
     "htmx.org": "2.0.10",
     "postcss": "^8.5.16",
-    "prettier": "^3.9.4",
+    "prettier": "^3.9.6",
     "supertest": "^7.2.2",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
