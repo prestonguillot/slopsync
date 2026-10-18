@@ -118,8 +118,13 @@ describe('Playlist Details Error Handling', () => {
         '/api/playlistDetails/playlist/1234567890123456789012',
       );
 
-      // Should return error about missing Spotify authentication
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBe(401);
+      expect(response.text).toContain('punk-alert--warning');
+      expect(response.text).toContain('Spotify Authentication Required');
+      expect(response.text).toContain('Please connect to Spotify first');
+      expect(response.text).toContain(
+        'Use the Spotify connection button at the top of the page to authenticate.',
+      );
     });
 
     it('should allow viewing playlist details with only Spotify connected', async () => {
