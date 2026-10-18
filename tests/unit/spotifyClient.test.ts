@@ -125,6 +125,32 @@ describe('exchangeCodeForTokens', () => {
       message: expect.stringContaining('Invalid authorization code'),
     });
   });
+
+  it('falls back to the bare error code when there is no description', async () => {
+    mockFetch.mockResolvedValue(errResp(400, { error: 'invalid_grant' }));
+
+    await expect(exchangeCodeForTokens('bad')).rejects.toMatchObject({
+      message: 'Spotify token request failed: invalid_grant',
+    });
+  });
+
+  it('names the HTTP status when the body is not an OAuth error', async () => {
+    mockFetch.mockResolvedValue(errResp(502, '<html>Bad Gateway</html>'));
+
+    await expect(exchangeCodeForTokens('code')).rejects.toMatchObject({
+      status: 502,
+      message: 'Spotify token request failed: HTTP 502',
+    });
+  });
+
+  it('captures the Retry-After header when the token endpoint rate limits', async () => {
+    mockFetch.mockResolvedValue(errResp(429, { error: 'rate_limited' }, { 'retry-after': '30' }));
+
+    await expect(exchangeCodeForTokens('code')).rejects.toMatchObject({
+      status: 429,
+      retryAfter: 30,
+    });
+  });
 });
 
 describe('refreshAccessToken', () => {
@@ -217,7 +243,11 @@ describe('getUserPlaylists: when playlists go missing', () => {
   it('carries the total it was promised, so the caller can say how many are missing', async () => {
     mockFetch.mockResolvedValue(okJson({ next: null, total: 63, items: [] }));
 
-    await expect(getUserPlaylists('AT')).rejects.toMatchObject({ reportedTotal: 63 });
+    await expect(getUserPlaylists('AT')).rejects.toMatchObject({
+      reportedTotal: 63,
+      name: 'SpotifyIncompleteResponseError',
+      message: 'Spotify reported 63 playlists but returned none',
+    });
   });
 
   it('returns an empty list, quietly, for an account that genuinely has none', async () => {
@@ -324,6 +354,30 @@ describe('getUserPlaylists', () => {
     ]);
   });
 
+  // Spotify omits owner on some editorial playlists and sends `images: []` for one with no cover.
+  it('maps a playlist with no owner and an empty image list rather than failing', async () => {
+    mockFetch.mockResolvedValue(
+      okJson({ next: null, items: [{ id: 'p1', name: 'Bare', images: [] }] }),
+    );
+
+    const [playlist] = await getUserPlaylists('AT');
+
+    expect(playlist).toMatchObject({ ownerId: null, coverImage: undefined });
+  });
+
+  it('takes the first image as the cover', async () => {
+    mockFetch.mockResolvedValue(
+      okJson({
+        next: null,
+        items: [{ id: 'p1', name: 'Art', images: [{ url: 'big.jpg' }, { url: 'small.jpg' }] }],
+      }),
+    );
+
+    const [playlist] = await getUserPlaylists('AT');
+
+    expect(playlist!.coverImage).toBe('big.jpg');
+  });
+
   it('paginates while next is present', async () => {
     mockFetch
       .mockResolvedValueOnce(
@@ -415,6 +469,12 @@ describe('error mapping', () => {
     expect(err.retryAfter).toBeLessThanOrEqual(600);
   });
 
+  it('leaves retryAfter undefined when the header is neither seconds nor a date', async () => {
+    mockFetch.mockResolvedValue(errResp(429, 'slow down', { 'retry-after': 'soon' }));
+    const err = await getCurrentUser('AT').catch((e) => e);
+    expect(err.retryAfter).toBeUndefined();
+  });
+
   it('leaves retryAfter undefined when the header is absent', async () => {
     mockFetch.mockResolvedValue(errResp(429, { error: { status: 429, message: 'rate limited' } }));
     const err = await getPlaylist('AT', 'p').catch((e) => e);
@@ -457,6 +517,7 @@ describe('isSpotifyUpstreamFailure', () => {
     ],
     ['a rejected token', new SpotifyApiError('unauthorized', 401)],
     ['a non-Spotify error', new Error('socket hang up')],
+    ['a non-Spotify error that carries a 5xx status', { status: 503, body: 'server_error' }],
   ])('does not mistake %s for an outage', (_label, error) => {
     expect(isSpotifyUpstreamFailure(error)).toBe(false);
   });
