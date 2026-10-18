@@ -54,6 +54,8 @@ vi.mock('@/youtube/client', async (importActual) => ({
 
 import { createApp } from '@/app';
 import { SpotifyApiError } from '@/spotify/client';
+import { YoutubeApiError } from '@/youtube/client';
+import { youtubeCircuitBreaker } from '@/lib/circuitBreaker';
 import { testServer } from '@tests/helpers/testServer';
 import { findSetCookie } from '@tests/helpers/httpCookies';
 import { youtubeTokenCookie } from '@tests/helpers/tokenCookies';
@@ -530,6 +532,66 @@ describe('POST /replace: failures', () => {
 
     expect(response.status).toBe(500);
     expect(response.text).toContain('Video replacement failed');
+  });
+
+  // "Please try again" is wrong advice when the next attempt is refused before it reaches YouTube,
+  // so a limit is told apart from a failure: what is blocking, when it lifts, and a 503.
+  it('says the daily quota is spent, and when it comes back, when the write hits it', async () => {
+    h.playlistItemsInsert.mockRejectedValue(new YoutubeApiError('quota', 403, 'quotaExceeded'));
+
+    const response = await replace({
+      newVideoId: NEW_VIDEO,
+      currentVideoId: OLD_VIDEO,
+      playlistId: PLAYLIST_ID,
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.text).toContain('YouTube is not accepting changes');
+    expect(response.text).toContain(
+      'Nothing was changed, because the daily YouTube API quota is exhausted.',
+    );
+    expect(response.text).toMatch(/retry in about (an hour|\d+ hours|\d+ minutes|a minute)\./);
+    expect(response.text).toContain('A daily quota resets at midnight Pacific.');
+  });
+
+  it('tells the page to disable its other edit controls when the quota is spent', async () => {
+    h.playlistItemsInsert.mockRejectedValue(new YoutubeApiError('quota', 403, 'quotaExceeded'));
+
+    const response = await replace({
+      newVideoId: NEW_VIDEO,
+      currentVideoId: OLD_VIDEO,
+      playlistId: PLAYLIST_ID,
+    });
+
+    expect(response.headers['hx-trigger']).toBe('youtube-blocked');
+  });
+
+  it('refuses without writing when YouTube is already known to be refusing', async () => {
+    youtubeCircuitBreaker.open('the daily YouTube API quota is exhausted');
+
+    const response = await replace({
+      newVideoId: NEW_VIDEO,
+      currentVideoId: OLD_VIDEO,
+      playlistId: PLAYLIST_ID,
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.text).toContain('because the daily YouTube API quota is exhausted.');
+    expect(h.playlistItemsInsert).not.toHaveBeenCalled();
+  });
+
+  it('says YouTube refused, and to retry shortly, on a throttle that has not shut writes off', async () => {
+    h.playlistItemsInsert.mockRejectedValue(new YoutubeApiError('rate', 403, 'rateLimitExceeded'));
+
+    const response = await replace({
+      newVideoId: NEW_VIDEO,
+      currentVideoId: OLD_VIDEO,
+      playlistId: PLAYLIST_ID,
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.text).toContain('Nothing was changed, because YouTube refused the request.');
+    expect(response.text).toContain('retry shortly.');
   });
 
   it('reports a 500 when Spotify cannot be reached', async () => {

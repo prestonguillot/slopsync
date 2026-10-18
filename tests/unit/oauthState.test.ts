@@ -95,6 +95,17 @@ describe('verifyOAuthState', () => {
     expect(verify(undefined, 'some-state').ok).toBe(false);
   });
 
+  // A request that never went through cookie-parser has no `cookies` at all; that is a rejection,
+  // not a crash in the callback.
+  it('rejects when the request carries no cookie jar at all', () => {
+    const res = fakeResponse();
+    const req = fakeRequest({ cookies: undefined });
+
+    expect(verifyOAuthState(req, res.res, 'spotify_oauth_state', 'some-state', 'Spotify')).toBe(
+      false,
+    );
+  });
+
   // Both empty must NOT be treated as a match - that would make the whole check a no-op for any
   // caller that forgot to send a state.
   it('rejects when both sides are empty', () => {
@@ -195,6 +206,20 @@ describe('canonicalLoginUrl', () => {
 
   it('does nothing when no redirect URI is configured', () => {
     expect(canonicalLoginUrl(login('localhost:3000'), undefined)).toBeUndefined();
+  });
+
+  // Unset is a provider that is not configured, which the connect flow reports on its own. Only a
+  // URI that is set but unparseable is a misconfiguration worth a warning.
+  it('does not warn about a redirect URI that is simply unset', () => {
+    canonicalLoginUrl(login('localhost:3000'), undefined);
+
+    expect(Logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns about a redirect URI that is set but cannot be parsed', () => {
+    canonicalLoginUrl(login('localhost:3000'), 'not a url');
+
+    expect(Logger.warn).toHaveBeenCalled();
   });
 
   it('does nothing when the redirect URI cannot be parsed', () => {

@@ -66,6 +66,7 @@ describe('indexPage.js: the OAuth error dialog', () => {
     ['rate_limited', 'Rate limited by Spotify. Please wait a moment and try again.'],
     ['auth_error', 'Spotify authentication failed. Please try reconnecting.'],
     ['service_unavailable', 'Spotify service is temporarily unavailable. Please try again soon.'],
+    ['state_mismatch', 'That Spotify connection attempt expired. Start it again.'],
   ])('explains reason=%s', async (reason, expected) => {
     renderDialog();
 
@@ -185,5 +186,118 @@ describe('indexPage.js: opening a video thumbnail', () => {
     document.getElementById('thumb')!.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('leaves the default action alone for a key pressed outside any thumbnail', async () => {
+    renderThumbnail();
+    await load();
+
+    const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    document.getElementById('plain')!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('indexPage.js: when YouTube stops accepting changes', () => {
+  const BLOCKED = 'YouTube is not accepting changes right now.';
+
+  const renderControls = () => {
+    document.body.innerHTML = `
+      <button id="sync" class="sync-btn">Sync</button>
+      <button id="already" class="sync-btn" disabled title="its own reason">Sync</button>
+      <div class="track-stamps">
+        <button id="edit" hx-get="/videos/search">Edit</button>
+        <button id="plain">Not a picker</button>
+      </div>
+      <button id="outside" hx-get="/elsewhere">Elsewhere</button>
+      <div id="target"></div>`;
+  };
+  const button = (id: string) => document.getElementById(id) as HTMLButtonElement;
+  const block = () => document.body.dispatchEvent(new CustomEvent('youtube-blocked'));
+  const swapIn = (html: string) => {
+    const target = document.getElementById('target')!;
+    target.innerHTML = html;
+    target.dispatchEvent(new CustomEvent('htmx:afterSwap', { bubbles: true }));
+  };
+
+  it('disables every sync button and says why', async () => {
+    renderControls();
+    await load();
+
+    block();
+
+    expect(button('sync').disabled).toBe(true);
+    expect(button('sync').title).toBe(BLOCKED);
+  });
+
+  it('keeps the reason an already-disabled sync button gives', async () => {
+    renderControls();
+    await load();
+
+    block();
+
+    expect(button('already').title).toBe('its own reason');
+  });
+
+  it('disables the stamps that open the video picker and says why', async () => {
+    renderControls();
+    await load();
+
+    block();
+
+    expect(button('edit').disabled).toBe(true);
+    expect(button('edit').title).toBe(BLOCKED);
+  });
+
+  it('leaves buttons that never lead to a write alone', async () => {
+    renderControls();
+    await load();
+
+    block();
+
+    expect(button('plain').disabled).toBe(false);
+    expect(button('outside').disabled).toBe(false);
+  });
+
+  it('disables the controls when a streamed partial inside the swap is marked blocked', async () => {
+    renderControls();
+    await load();
+
+    swapIn('<p data-youtube-blocked>Quota spent</p>');
+
+    expect(button('sync').disabled).toBe(true);
+  });
+
+  it('disables the controls when the swapped element is itself marked blocked', async () => {
+    renderControls();
+    await load();
+
+    const target = document.getElementById('target')!;
+    target.setAttribute('data-youtube-blocked', '');
+    target.dispatchEvent(new CustomEvent('htmx:afterSwap', { bubbles: true }));
+
+    expect(button('sync').disabled).toBe(true);
+  });
+
+  it('ignores a swap event raised from something that is not an element', async () => {
+    renderControls();
+    await load();
+    const text = document.createTextNode('streamed text');
+    document.getElementById('target')!.appendChild(text);
+
+    expect(() =>
+      text.dispatchEvent(new CustomEvent('htmx:afterSwap', { bubbles: true })),
+    ).not.toThrow();
+    expect(button('sync').disabled).toBe(false);
+  });
+
+  it('leaves the controls alone after a swap that is not marked blocked', async () => {
+    renderControls();
+    await load();
+
+    swapIn('<p>Synced</p>');
+
+    expect(button('sync').disabled).toBe(false);
   });
 });
