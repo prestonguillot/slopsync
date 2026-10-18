@@ -8,10 +8,14 @@ name: Mutation
 # the whole codebase is swept on a schedule instead.
 
 on:
-  # Every PR, with no paths filter: the ratchet is a required check, and a required check that a
-  # filter skips never reports, which leaves the PR blocked forever. A PR that touches no mutated
-  # file costs an install and a git diff, then passes.
+  # Advisory, deliberately not a required check: it flags a drop on the PR, and the weekly sweep is
+  # the gate. Filtered by path because that is all it can be - a required check that a filter
+  # skips would never report.
   pull_request:
+    paths:
+      - 'src/**'
+      - 'public/js/**'
+      - 'tests/**'
   schedule:
     # Sundays, 04:00 UTC. Catches drift that no single change is responsible for. A failure here
     # emails the repo owner; nothing else about a scheduled run reaches anyone.
