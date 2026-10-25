@@ -13,8 +13,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
 import _traverse from '@babel/traverse';
+import type { Mutant } from '@stryker-mutator/api/core';
 import { LogTextIgnorer } from '../../scripts/stryker-ignore-log-text.mjs';
 
 // @babel/traverse ships CJS; under ESM the callable hides behind .default.
@@ -118,5 +121,99 @@ describe('what it must never ignore', () => {
   // Same call shape, different object: only the loggers are noise.
   it('measures a string argument to something that merely looks like a logger', () => {
     expect(isIgnored("audit.info('user deleted account');", 'user deleted account')).toBe(false);
+  });
+});
+
+/**
+ * The instrumenter that @stryker-mutator/core itself loads, rather than whichever copy a direct
+ * dependency would resolve to. What matters is what the sweep generates: Stryker 10 added the
+ * CallExpression mutator, and a plugin that only loaded cleanly let it put every log line back into
+ * the score.
+ */
+async function strykerInstrumenter(): Promise<typeof import('@stryker-mutator/instrumenter')> {
+  const fromCore = createRequire(
+    createRequire(__filename).resolve('@stryker-mutator/core/package.json'),
+  );
+  return import(pathToFileURL(fromCore.resolve('@stryker-mutator/instrumenter')).href);
+}
+
+const silent = {
+  isTraceEnabled: () => false,
+  isDebugEnabled: () => false,
+  isInfoEnabled: () => false,
+  isWarnEnabled: () => false,
+  isErrorEnabled: () => false,
+  isFatalEnabled: () => false,
+  trace: () => {},
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  fatal: () => {},
+};
+
+/** The mutants Stryker would run against `body`, keyed by the source line each one breaks. */
+async function mutantsOf(
+  body: string,
+): Promise<Array<{ mutator: string; line: string; ignored: boolean }>> {
+  const { Instrumenter } = await strykerInstrumenter();
+  const content = `function f(service, error, flag, count) {\n${body}\n}`;
+  const lines = content.split('\n');
+  const { mutants } = await new Instrumenter(silent).instrument(
+    [{ name: 'f.ts', content, mutate: true }],
+    { ignorers: [new LogTextIgnorer()], excludedMutations: [], plugins: null },
+  );
+  return mutants.map((m: Mutant) => ({
+    mutator: m.mutatorName,
+    // Stryker's locations are zero-based.
+    line: lines[m.location.start.line]!.trim(),
+    ignored: m.status === 'Ignored',
+  }));
+}
+
+describe('deleting a log line', () => {
+  it.each([
+    "Logger.auth(service, 'connection validated');",
+    "Logger.error('Failed', {}, error);",
+    'Logger.debug(`Scraping YouTube for: "${service}"`);',
+    "logger.info('starting up');",
+  ])('is ignored for %s', async (line) => {
+    const deletions = (await mutantsOf(line)).filter((m) => m.mutator === 'CallExpression');
+
+    expect(deletions).toEqual([{ mutator: 'CallExpression', line, ignored: true }]);
+  });
+
+  it('still measures deleting the real call beside it', async () => {
+    const mutants = await mutantsOf(
+      "Logger.auth(service, 'connection validated');\nbreaker.recordSuccess();",
+    );
+
+    expect(mutants).toContainEqual({
+      mutator: 'CallExpression',
+      line: 'breaker.recordSuccess();',
+      ignored: false,
+    });
+  });
+
+  it('still measures deleting a call to something that merely looks like a logger', async () => {
+    const line = 'audit.info(service);';
+
+    expect(await mutantsOf(line)).toContainEqual({
+      mutator: 'CallExpression',
+      line,
+      ignored: false,
+    });
+  });
+
+  // Ignoring a node ignores everything beneath it, so a log line that carries real data must not
+  // be ignored as a whole just to silence its deletion.
+  it.each([
+    ["Logger.warn('Refused', { reason: 'quotaExceeded' });", 'ObjectLiteral'],
+    ["Logger.warn('Refused', { reason: 'quotaExceeded' });", 'StringLiteral'],
+    ["Logger.info('Synced', count + 1);", 'ArithmeticOperator'],
+  ])('leaves the data in %s measured (%s)', async (line, mutator) => {
+    const measured = (await mutantsOf(line)).filter((m) => m.mutator === mutator && !m.ignored);
+
+    expect(measured.length).toBeGreaterThan(0);
   });
 });

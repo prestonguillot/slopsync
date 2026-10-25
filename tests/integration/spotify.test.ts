@@ -76,7 +76,15 @@ const playlistSummary = (id: string, name: string, trackTotal: number, ownerId =
  * What playlists.list resolves to. Named, because an inline `items: []` infers never[] and then no
  * test can hand it a playlist without a type error.
  */
-type YtPlaylistList = Promise<{ data: { items: Array<{ snippet?: { title?: string } }> } }>;
+type YtPlaylistList = Promise<{
+  data: {
+    items: Array<{
+      id?: string;
+      snippet?: { title?: string };
+      contentDetails?: { itemCount?: number };
+    }>;
+  };
+}>;
 
 // Mock the YouTube client. createYoutubeClient returns a shared client object so
 // per-test overrides of `ytClient.client.playlists.list` take effect.
@@ -171,6 +179,16 @@ describe('Spotify Playlists', () => {
   });
 
   describe('GET /auth/spotify/playlists', () => {
+    const spotifyCookie = `spotify_tokens=${JSON.stringify({
+      accessToken: 'test-access-token',
+      refreshToken: 'test-refresh-token',
+    })}`;
+
+    const load = () =>
+      request(app)
+        .get('/auth/spotify/playlists')
+        .set('Cookie', [spotifyCookie, `youtube_tokens=${createMockYouTubeToken()}`]);
+
     it('should return 401 when not authenticated', async () => {
       const response = await request(app).get('/auth/spotify/playlists').expect(401);
 
@@ -188,16 +206,6 @@ describe('Spotify Playlists', () => {
      * cookie, still said connected. Nothing on screen said anything had gone wrong.
      */
     describe('when the YouTube token has expired while the app sat unused', () => {
-      const spotifyCookie = `spotify_tokens=${JSON.stringify({
-        accessToken: 'test-access-token',
-        refreshToken: 'test-refresh-token',
-      })}`;
-
-      const load = () =>
-        request(app)
-          .get('/auth/spotify/playlists')
-          .set('Cookie', [spotifyCookie, `youtube_tokens=${createMockYouTubeToken()}`]);
-
       beforeEach(() => {
         mockedGetCurrentUser.mockResolvedValue({ id: 'test-user', displayName: null });
         mockedGetUserPlaylists.mockResolvedValue([playlistSummary('1', 'Banana', 1)]);
@@ -249,19 +257,21 @@ describe('Spotify Playlists', () => {
      * refresh before the read. Anything else has to reach the error handler.
      */
     describe('when YouTube cannot be read for a reason this route does not understand', () => {
-      const spotifyCookie = `spotify_tokens=${JSON.stringify({
-        accessToken: 'test-access-token',
-        refreshToken: 'test-refresh-token',
-      })}`;
-
-      const load = () =>
-        request(app)
-          .get('/auth/spotify/playlists')
-          .set('Cookie', [spotifyCookie, `youtube_tokens=${createMockYouTubeToken()}`]);
-
       beforeEach(() => {
         mockedGetCurrentUser.mockResolvedValue({ id: 'test-user', displayName: null });
         mockedGetUserPlaylists.mockResolvedValue([playlistSummary('1', 'Banana', 1)]);
+      });
+
+      // A YouTube that fails here is failing for every page that reads it, so it counts toward the
+      // breaker opening.
+      it('counts the failure against the breaker', async () => {
+        ytClient.client.playlists.list = vi.fn(() =>
+          Promise.reject(new YoutubeApiError('boom', 500)),
+        );
+
+        await load();
+
+        expect(youtubeCircuitBreaker.getState().failureCount).toBe(1);
       });
 
       it.each([
@@ -296,6 +306,42 @@ describe('Spotify Playlists', () => {
 
         expect(response.status).toBe(403);
         expect(response.headers['hx-redirect']).toBe('/?error=youtube&reason=quota_exceeded');
+      });
+    });
+
+    describe('when YouTube is read', () => {
+      beforeEach(() => {
+        mockedGetCurrentUser.mockResolvedValue({ id: 'test-user', displayName: null });
+        mockedGetUserPlaylists.mockResolvedValue([playlistSummary('1', 'Banana', 9)]);
+        ytClient.client.playlists.list = vi.fn(() =>
+          Promise.resolve({
+            data: {
+              items: [
+                {
+                  id: 'PLbanana',
+                  snippet: { title: 'Banana (from Spotify)' },
+                  contentDetails: { itemCount: 7 },
+                },
+              ],
+            },
+          }),
+        );
+      });
+
+      it('links a synced playlist to its YouTube mirror, with how much of it is there', async () => {
+        const response = await load();
+
+        expect(response.text).toContain('href="https://www.youtube.com/playlist?list=PLbanana"');
+        expect(response.text).toContain('7 of 9 tracks synced to YouTube');
+      });
+
+      // A read that works means YouTube has recovered, so failures before it stop counting.
+      it('clears the failures the breaker was counting', async () => {
+        youtubeCircuitBreaker.recordFailure(new Error('an earlier blip'));
+
+        await load();
+
+        expect(youtubeCircuitBreaker.getState().failureCount).toBe(0);
       });
     });
 
