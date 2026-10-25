@@ -33,19 +33,45 @@ const LOGGER_OBJECTS = new Set(['Logger', 'logger']);
  */
 export class LogTextIgnorer {
   shouldIgnore(path) {
+    if (path.isExpressionStatement()) return isBareLogLine(path) ? REASON : undefined;
     if (!path.isStringLiteral() && !path.isTemplateLiteral()) return undefined;
 
     const call = path.parentPath;
-    if (!call?.isCallExpression()) return undefined;
+    if (!call?.isCallExpression() || !isLoggerCall(call)) return undefined;
     // Only a direct argument. A literal nested inside an object or an expression is something else.
-    if (!call.get('arguments').some((arg) => arg.node === path.node)) return undefined;
-
-    const callee = call.get('callee');
-    if (!callee.isMemberExpression()) return undefined;
-
-    const object = callee.get('object');
-    return object.isIdentifier() && LOGGER_OBJECTS.has(object.node.name) ? REASON : undefined;
+    return call.get('arguments').some((arg) => arg.node === path.node) ? REASON : undefined;
   }
+}
+
+/**
+ * A log statement whose every argument is wording or a plain name - the line Stryker's
+ * CallExpression mutator deletes.
+ *
+ * That mutator deletes a call statement only where the deletion is the sole mutant left in it: a
+ * log call with a real context object yields mutants in the object and no deletion at all. So the
+ * deletion only ever lands on a log line with nothing else in it to measure, and that is the shape
+ * this ignores. Ignoring a node ignores everything beneath it, which is why an argument that could
+ * itself be mutated - `{ status, url }`, a call, an expression - leaves the whole line measured.
+ */
+function isBareLogLine(statement) {
+  const call = statement.get('expression');
+  return call.isCallExpression() && isLoggerCall(call) && call.get('arguments').every(isInert);
+}
+
+function isInert(arg) {
+  return (
+    arg.isStringLiteral() ||
+    arg.isTemplateLiteral() ||
+    arg.isIdentifier() ||
+    (arg.isObjectExpression() && arg.node.properties.length === 0)
+  );
+}
+
+function isLoggerCall(call) {
+  const callee = call.get('callee');
+  if (!callee.isMemberExpression()) return false;
+  const object = callee.get('object');
+  return object.isIdentifier() && LOGGER_OBJECTS.has(object.node.name);
 }
 
 export const strykerPlugins = [declareClassPlugin(PluginKind.Ignore, 'log-text', LogTextIgnorer)];

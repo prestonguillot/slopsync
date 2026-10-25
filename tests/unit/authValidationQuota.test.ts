@@ -185,6 +185,34 @@ describe('YouTube Auth Validation - Quota Handling', () => {
     });
   });
 
+  describe('a genuine API failure counts against the breaker', () => {
+    it('clears the tokens and records the failure on a 500', async () => {
+      yt.channelsList.mockRejectedValueOnce(apiError(500, 'Internal server error'));
+
+      await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
+
+      expect(mockResponse.clearCookie).toHaveBeenCalledWith('youtube_tokens');
+      expect(youtubeCircuitBreaker.getState().failureCount).toBe(1);
+    });
+
+    // The threshold is two consecutive failures. A success between them means YouTube recovered,
+    // so the second failure starts the count again rather than shutting YouTube off.
+    it('lets a success in between reset the count, so two failures apart do not open it', async () => {
+      yt.channelsList
+        .mockRejectedValueOnce(apiError(500, 'Internal server error'))
+        .mockResolvedValueOnce({ items: [] })
+        .mockRejectedValueOnce(apiError(500, 'Internal server error'));
+
+      await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
+      const recovered = await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
+      await validateYouTubeConnection(mockYoutubeTokens, mockResponse);
+
+      expect(recovered.connected).toBe(true);
+      expect(youtubeCircuitBreaker.isOpen()).toBe(false);
+      expect(youtubeCircuitBreaker.getState().failureCount).toBe(1);
+    });
+  });
+
   describe('User Experience Flow', () => {
     it('should transition from connected to unavailable on quota exceeded', async () => {
       // Start in connected state (circuit closed)

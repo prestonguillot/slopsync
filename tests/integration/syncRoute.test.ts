@@ -10,6 +10,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { youtubeCircuitBreaker } from '@/lib/circuitBreaker';
 import { YoutubeApiError } from '@/youtube/client';
@@ -26,6 +29,7 @@ const h = vi.hoisted(() => ({
   reconcilePlaylist: vi.fn<typeof import('@/sync/playlistReconcile').reconcilePlaylist>(() =>
     Promise.resolve({ inserted: 0, deleted: 0, moved: 0 }),
   ),
+  runSync: vi.fn<typeof import('@/sync/runSync').runSync>(),
 }));
 
 vi.mock('@/lib/delay', () => ({ sleep: h.sleep }));
@@ -56,6 +60,13 @@ vi.mock('@/youtube/auth', () => ({
 vi.mock('@/sync/playlistReconcile', async (importActual) => {
   const actual = await importActual<typeof import('@/sync/playlistReconcile')>();
   return { ...actual, reconcilePlaylist: h.reconcilePlaylist };
+});
+
+// The real sync, observed: the route does not await it in any way a client can see once it has gone.
+vi.mock('@/sync/runSync', async (importActual) => {
+  const actual = await importActual<typeof import('@/sync/runSync')>();
+  h.runSync.mockImplementation(actual.runSync);
+  return { ...actual, runSync: h.runSync };
 });
 
 import { createApp } from '@/app';
@@ -168,6 +179,38 @@ describe('GET /api/sync/playlist/:id/stream', () => {
     expect(res.status).toBe(200);
     expect(h.reconcilePlaylist).toHaveBeenCalledTimes(1);
     expect(lastDesired()).toEqual(['v1', 'v2']);
+  });
+
+  // A user who navigates away has not asked for their playlist to be rewritten without them.
+  it('stops searching, and writes nothing, once the page that started it goes away', async () => {
+    h.fetchAllPlaylistItems.mockResolvedValue([track('t1', 'Song One'), track('t2', 'Song Two')]);
+    h.playlistsList.mockResolvedValue({ data: { items: [] } });
+    h.playlistsInsert.mockResolvedValue({ data: { id: 'NEW_PL' } });
+    h.playlistItemsList.mockResolvedValue({ data: { items: [] } });
+
+    const served = once(app, 'request') as Promise<[IncomingMessage, ServerResponse]>;
+    const { port } = app.address() as AddressInfo;
+    const client = http.get({
+      port,
+      path: '/api/sync/playlist/1234567890123456789012/stream?batchSize=all',
+      headers: { Cookie: `spotify_tokens=${spotifyCookie}; youtube_tokens=${youtubeCookie}` },
+    });
+    client.on('error', () => {});
+    const [req] = await served;
+
+    h.searchMusicVideo.mockImplementationOnce(async () => {
+      client.destroy();
+      await once(req, 'close');
+      return 'v1';
+    });
+    // The response closes the moment the client drops, well before the sync decides whether to
+    // carry on - so this waits for the sync itself.
+    await vi.waitFor(() => expect(h.runSync).toHaveBeenCalled());
+    await h.runSync.mock.results[0]!.value;
+
+    expect(h.searchMusicVideo).toHaveBeenCalledTimes(1);
+    expect(h.playlistsInsert).not.toHaveBeenCalled();
+    expect(h.reconcilePlaylist).not.toHaveBeenCalled();
   });
 
   // YouTube rejects writes to a playlist it has only just created, and reconcile is what writes.
@@ -645,6 +688,8 @@ describe('GET stream: authentication', () => {
     expect(response.status).toBe(401);
     expect(response.text).toContain(service);
     expect(response.text).toContain(loginUrl);
+    // Without it the connection button keeps saying Connected above the reconnect prompt.
+    expect(response.headers['hx-trigger']).toBe(`auth-expired-${service.toLowerCase()}`);
   });
 
   // Anything else is not the user's fault and must not send them off to reconnect a working account.
